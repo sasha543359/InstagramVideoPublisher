@@ -1,7 +1,28 @@
 namespace InstagramVideoPublisher.Models
 {
     /// <summary>
-    /// Настройки Instagram API
+    /// Настройки для ОДНОГО Instagram аккаунта
+    /// </summary>
+    public class InstagramAccountSettings
+    {
+        public string AccountName { get; set; } = string.Empty;
+        public string AccessToken { get; set; } = string.Empty;
+        public string AccountId { get; set; } = string.Empty;
+        public List<string> TikTokUsernames { get; set; } = new List<string>();
+    }
+
+    /// <summary>
+    /// Корневые настройки приложения
+    /// </summary>
+    public class AppSettings
+    {
+        public List<InstagramAccountSettings> InstagramAccounts { get; set; } = new();
+        public int CheckIntervalMinutes { get; set; } = 5;
+        public int AccountCheckDelayMinutes { get; set; } = 1;
+    }
+
+    /// <summary>
+    /// Настройки для одного Instagram аккаунта (для совместимости со старым кодом)
     /// </summary>
     public class InstagramSettings
     {
@@ -10,7 +31,7 @@ namespace InstagramVideoPublisher.Models
     }
 
     /// <summary>
-    /// Настройки Cloudinary
+    /// Настройки Cloudinary (больше не используется, но оставляем для совместимости)
     /// </summary>
     public class CloudinarySettings
     {
@@ -24,12 +45,19 @@ namespace InstagramVideoPublisher.Models
     /// </summary>
     public class TikTokMonitorSettings
     {
-        public List<string> TikTokUsernames { get; set; } = new List<string>();
-        public bool TestMode { get; set; } = false;
-        public int CheckIntervalMinutes { get; set; } = 5;
-        public int AccountCheckDelaySeconds { get; set; } = 60;
-        public string YtDlpPath { get; set; } = @"C:\Users\Computer\AppData\Local\Programs\Python\Python313\Scripts\yt-dlp.exe";
-        public string DownloadPath { get; set; } = @"C:\Users\Computer\Desktop\TikTokVideos";
+        public string YtDlpPath { get; set; } = string.Empty;
+        public string DownloadPath { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Настройки обработки видео
+    /// </summary>
+    public class VideoProcessingSettings
+    {
+        public string FFmpegPath { get; set; } = "ffmpeg";
+        public bool RemoveMetadata { get; set; } = true;
+        public bool AddCapCutMetadata { get; set; } = false;
+        public int VolumeIncrease { get; set; } = 10; // %
     }
 
     /// <summary>

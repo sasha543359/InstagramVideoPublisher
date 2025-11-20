@@ -25,29 +25,22 @@ namespace InstagramVideoPublisher
 
             // Получаем сервисы
             var tiktokMonitor = serviceProvider.GetRequiredService<ITikTokMonitorService>();
-            var fileService = serviceProvider.GetRequiredService<IFileService>();
-            var instagramService = serviceProvider.GetRequiredService<IInstagramService>();
+            var videoProcessing = serviceProvider.GetRequiredService<IVideoProcessingService>();
             var config = serviceProvider.GetRequiredService<IConfiguration>();
 
+            // Загружаем настройки
+            var appSettings = new AppSettings();
+            config.Bind(appSettings);
+
+            var instagramAccounts = appSettings.InstagramAccounts;
+            var checkInterval = appSettings.CheckIntervalMinutes;
+            var accountDelay = appSettings.AccountCheckDelayMinutes;
+
             // Проверка настроек
-            var accessToken = config["Instagram:AccessToken"];
-            var tiktokUsernames = config.GetSection("TikTokMonitor:TikTokUsernames").Get<List<string>>() ?? new List<string>();
-            var checkInterval = int.Parse(config["TikTokMonitor:CheckIntervalMinutes"] ?? "5");
-            var accountDelay = int.Parse(config["TikTokMonitor:AccountCheckDelaySeconds"] ?? "60");
-            var testMode = bool.Parse(config["TikTokMonitor:TestMode"] ?? "false");
-
-            if (string.IsNullOrEmpty(accessToken))
+            if (instagramAccounts.Count == 0)
             {
-                AnsiConsole.MarkupLine("[red]❌ ОШИБКА: Access Token не настроен![/]");
-                AnsiConsole.MarkupLine("[yellow]Откройте appsettings.json и вставьте ваш Access Token[/]");
-                Console.ReadKey();
-                return;
-            }
-
-            if (tiktokUsernames.Count == 0)
-            {
-                AnsiConsole.MarkupLine("[red]❌ ОШИБКА: TikTok аккаунты не настроены![/]");
-                AnsiConsole.MarkupLine("[yellow]Откройте appsettings.json и укажите TikTokUsernames[/]");
+                AnsiConsole.MarkupLine("[red]❌ ОШИБКА: Instagram аккаунты не настроены![/]");
+                AnsiConsole.MarkupLine("[yellow]Откройте appsettings.json и настройте InstagramAccounts[/]");
                 Console.ReadKey();
                 return;
             }
@@ -55,33 +48,35 @@ namespace InstagramVideoPublisher
             // Показываем настройки
             var settingsTable = new Table();
             settingsTable.Border = TableBorder.Rounded;
-            settingsTable.AddColumn("[yellow]Параметр[/]");
-            settingsTable.AddColumn("[green]Значение[/]");
-            settingsTable.AddRow("📱 TikTok аккаунты", string.Join(", ", tiktokUsernames.Select(u => $"@{u}")));
-            settingsTable.AddRow("⏱️  Интервал проверки", $"{checkInterval} минут");
-            settingsTable.AddRow("⏲️  Задержка между аккаунтами", $"{accountDelay} секунд");
-            settingsTable.AddRow("📸 Instagram аккаунт", "@0_bimbimbambam_0");
+            settingsTable.AddColumn("[yellow]Instagram аккаунт[/]");
+            settingsTable.AddColumn("[green]TikTok источники[/]");
+            settingsTable.AddColumn("[cyan]Статус[/]");
 
-            if (testMode)
+            foreach (var account in instagramAccounts)
             {
-                settingsTable.AddRow("🧪 Режим", "[red]ТЕСТОВЫЙ (скачает последнее видео ОДИН РАЗ)[/]");
+                var status = string.IsNullOrEmpty(account.AccessToken) ? "[red]❌ Нет токена[/]" : "[green]✓ Активен[/]";
+                var tiktoks = string.Join(", ", account.TikTokUsernames.Select(u => $"@{u}"));
+                settingsTable.AddRow($"@{account.AccountName}", tiktoks, status);
             }
 
             AnsiConsole.Write(settingsTable);
             AnsiConsole.WriteLine();
 
-            if (testMode)
-            {
-                AnsiConsole.MarkupLine("[red]⚠️  ТЕСТОВЫЙ РЕЖИМ ВКЛЮЧЁН![/]");
-                AnsiConsole.MarkupLine("[yellow]   При первом запуске скачает последнее видео с каждого аккаунта[/]");
-                AnsiConsole.MarkupLine("[yellow]   После первого цикла будет работать как обычно (только новые видео)[/]");
-                AnsiConsole.MarkupLine("[yellow]   Для обычного режима установите TestMode: false в appsettings.json[/]\n");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine("[yellow]ℹ️  При первом запуске видео НЕ скачиваются - только запоминается последнее видео[/]");
-                AnsiConsole.MarkupLine("[yellow]   Новые видео будут автоматически публиковаться в Instagram[/]\n");
-            }
+            var configTable = new Table();
+            configTable.Border = TableBorder.Rounded;
+            configTable.AddColumn("[yellow]Параметр[/]");
+            configTable.AddColumn("[green]Значение[/]");
+            configTable.AddRow("⏱️  Интервал проверки", $"{checkInterval} минут");
+            configTable.AddRow("⏲️  Задержка между аккаунтами", $"{accountDelay} минута");
+            configTable.AddRow("📹 FFmpeg обработка", "[green]✓ Включена[/]");
+            configTable.AddRow("🔊 Увеличение громкости", "+10%");
+            configTable.AddRow("🎨 Разрешение", "720x1280 (HD вертикальное)");
+
+            AnsiConsole.Write(configTable);
+            AnsiConsole.WriteLine();
+
+            AnsiConsole.MarkupLine("[yellow]ℹ️  При первом запуске видео НЕ скачиваются - только запоминается последнее видео[/]");
+            AnsiConsole.MarkupLine("[yellow]   Новые видео будут автоматически публиковаться в Instagram[/]\n");
 
             // Главный цикл мониторинга
             int cycleCount = 0;
@@ -96,112 +91,130 @@ namespace InstagramVideoPublisher
                     AnsiConsole.Write(rule);
                     AnsiConsole.WriteLine();
 
-                    // Проверяем каждый TikTok аккаунт
-                    for (int i = 0; i < tiktokUsernames.Count; i++)
+                    // Проходим по каждому Instagram аккаунту
+                    for (int accountIndex = 0; accountIndex < instagramAccounts.Count; accountIndex++)
                     {
-                        var username = tiktokUsernames[i];
+                        var instagramAccount = instagramAccounts[accountIndex];
 
-                        AnsiConsole.MarkupLine($"[grey]🔍 Проверяем @{username} ({i + 1}/{tiktokUsernames.Count})...[/]");
-
-                        // Проверяем новое видео
-                        var newVideo = await tiktokMonitor.CheckForNewVideo(username);
-
-                        if (newVideo == null)
+                        // Пропускаем если нет токена
+                        if (string.IsNullOrEmpty(instagramAccount.AccessToken))
                         {
-                            AnsiConsole.MarkupLine("[grey]   Нет новых видео[/]\n");
-
-                            // Задержка перед следующим аккаунтом (но не после последнего)
-                            if (i < tiktokUsernames.Count - 1)
-                            {
-                                AnsiConsole.MarkupLine($"[grey]⏳ Ждём {accountDelay} секунд перед проверкой следующего аккаунта...[/]\n");
-                                await Task.Delay(TimeSpan.FromSeconds(accountDelay));
-                            }
+                            AnsiConsole.MarkupLine($"[red]⚠️  @{instagramAccount.AccountName} - нет токена, пропускаем[/]\n");
                             continue;
                         }
 
-                        // Новое видео найдено!
-                        AnsiConsole.MarkupLine($"[green]🎉 Найдено новое видео на @{username}![/]");
-                        AnsiConsole.MarkupLine($"[grey]   Название:[/] {newVideo.Title}");
-                        AnsiConsole.MarkupLine($"[grey]   ID:[/] {newVideo.Id}");
-                        AnsiConsole.MarkupLine($"[grey]   Длина:[/] {newVideo.Duration} секунд\n");
+                        AnsiConsole.MarkupLine($"[blue]═══ Instagram: @{instagramAccount.AccountName} ({accountIndex + 1}/{instagramAccounts.Count}) ═══[/]\n");
 
-                        await AnsiConsole.Status()
-                            .Spinner(Spinner.Known.Dots)
-                            .SpinnerStyle(Style.Parse("green bold"))
-                            .StartAsync("Обрабатываем видео...", async ctx =>
+                        // Создаём Instagram сервис для этого аккаунта
+                        var instagramService = CreateInstagramService(
+                            serviceProvider,
+                            instagramAccount.AccessToken,
+                            instagramAccount.AccountId);
+
+                        // Проверяем каждый TikTok аккаунт
+                        foreach (var tiktokUsername in instagramAccount.TikTokUsernames)
+                        {
+                            AnsiConsole.MarkupLine($"[grey]🔍 Проверяем @{tiktokUsername}...[/]");
+
+                            // Проверяем новое видео
+                            var newVideo = await tiktokMonitor.CheckForNewVideo(tiktokUsername);
+
+                            if (newVideo == null)
                             {
-                                // Шаг 1: Скачиваем видео
-                                ctx.Status("📥 Скачиваем видео с TikTok...");
-                                string localPath = await tiktokMonitor.DownloadVideo(newVideo);
-                                AnsiConsole.MarkupLine($"[green]✓[/] Видео скачано: [grey]{Path.GetFileName(localPath)}[/]");
-                                await Task.Delay(1000);
+                                AnsiConsole.MarkupLine("[grey]   Нет новых видео[/]\n");
+                                continue;
+                            }
 
-                                // Шаг 2: Загружаем на Cloudinary
-                                ctx.Status("☁️  Загружаем на Cloudinary...");
-                                string cloudinaryUrl = await fileService.UploadVideoAsync(localPath);
-                                AnsiConsole.MarkupLine($"[green]✓[/] Загружено на Cloudinary");
-                                await Task.Delay(1000);
+                            // Новое видео найдено!
+                            AnsiConsole.MarkupLine($"[green]🎉 Найдено новое видео на @{tiktokUsername}![/]");
+                            AnsiConsole.MarkupLine($"[grey]   Название:[/] {newVideo.Title}");
+                            AnsiConsole.MarkupLine($"[grey]   ID:[/] {newVideo.Id}");
+                            AnsiConsole.MarkupLine($"[grey]   Длина:[/] {newVideo.Duration} секунд\n");
 
-                                // Шаг 3: Публикуем в Instagram
-                                ctx.Status("📸 Публикуем в Instagram...");
-
-                                var caption = GenerateCaption(newVideo);
-
-                                var result = await instagramService.PublishVideoAsync(new VideoPublishInfo
+                            await AnsiConsole.Status()
+                                .Spinner(Spinner.Known.Dots)
+                                .SpinnerStyle(Style.Parse("green bold"))
+                                .StartAsync("Обрабатываем видео...", async ctx =>
                                 {
-                                    FilePath = localPath,
-                                    VideoUrl = cloudinaryUrl,
-                                    Caption = caption
+                                    // Шаг 1: Скачиваем видео
+                                    ctx.Status("📥 Скачиваем видео с TikTok...");
+                                    string localPath = await tiktokMonitor.DownloadVideo(newVideo);
+                                    AnsiConsole.MarkupLine($"[green]✓[/] Видео скачано: [grey]{Path.GetFileName(localPath)}[/]");
+                                    await Task.Delay(1000);
+
+                                    // Шаг 2: Обрабатываем FFmpeg
+                                    ctx.Status("🎬 Обрабатываем видео (FFmpeg)...");
+                                    await videoProcessing.ProcessVideoAsync(localPath);
+                                    AnsiConsole.MarkupLine($"[green]✓[/] Видео обработано (уникализация, метаданные очищены)");
+                                    await Task.Delay(1000);
+
+                                    // Шаг 3: Генерируем публичный URL
+                                    // TODO: Здесь будет Nginx URL после настройки на сервере
+                                    // Пока используем заглушку
+                                    var publicUrl = $"http://your-server-ip/videos/{Path.GetFileName(localPath)}";
+                                    AnsiConsole.MarkupLine($"[green]✓[/] URL для Instagram: [grey]{publicUrl}[/]");
+
+                                    // Шаг 4: Публикуем в Instagram
+                                    ctx.Status($"📸 Публикуем в Instagram (@{instagramAccount.AccountName})...");
+
+                                    var caption = GenerateCaption(newVideo, tiktokUsername);
+
+                                    var result = await instagramService.PublishVideoAsync(new VideoPublishInfo
+                                    {
+                                        FilePath = localPath,
+                                        VideoUrl = publicUrl,
+                                        Caption = caption
+                                    });
+
+                                    AnsiConsole.WriteLine();
+
+                                    if (result.Success)
+                                    {
+                                        var successPanel = new Panel(
+                                            new Markup($"[green]✓ Видео успешно опубликовано![/]\n\n" +
+                                                     $"[grey]Instagram:[/] [cyan]@{instagramAccount.AccountName}[/]\n" +
+                                                     $"[grey]Media ID:[/] [yellow]{result.MediaId}[/]\n" +
+                                                     $"[grey]TikTok:[/] [cyan]@{tiktokUsername}[/]\n" +
+                                                     $"[grey]Video ID:[/] [cyan]{newVideo.Id}[/]"))
+                                        {
+                                            Border = BoxBorder.Double,
+                                            BorderStyle = new Style(Color.Green)
+                                        };
+                                        AnsiConsole.Write(successPanel);
+                                    }
+                                    else
+                                    {
+                                        var errorPanel = new Panel(
+                                            new Markup($"[red]❌ Ошибка публикации[/]\n\n" +
+                                                     $"[grey]{result.ErrorMessage}[/]"))
+                                        {
+                                            Border = BoxBorder.Double,
+                                            BorderStyle = new Style(Color.Red)
+                                        };
+                                        AnsiConsole.Write(errorPanel);
+                                    }
+
+                                    // Удаляем локальный файл после публикации
+                                    try
+                                    {
+                                        File.Delete(localPath);
+                                        AnsiConsole.MarkupLine($"\n[grey]🗑️  Удалён локальный файл[/]");
+                                    }
+                                    catch { }
                                 });
 
-                                AnsiConsole.WriteLine();
+                            AnsiConsole.WriteLine();
+                        }
 
-                                if (result.Success)
-                                {
-                                    var successPanel = new Panel(
-                                        new Markup($"[green]✓ Видео успешно опубликовано в Instagram![/]\n\n" +
-                                                 $"[grey]Media ID:[/] [yellow]{result.MediaId}[/]\n" +
-                                                 $"[grey]TikTok:[/] [cyan]@{username}[/]\n" +
-                                                 $"[grey]Video ID:[/] [cyan]{newVideo.Id}[/]\n" +
-                                                 $"[grey]Caption:[/] {caption}"))
-                                    {
-                                        Border = BoxBorder.Double,
-                                        BorderStyle = new Style(Color.Green)
-                                    };
-                                    AnsiConsole.Write(successPanel);
-                                }
-                                else
-                                {
-                                    var errorPanel = new Panel(
-                                        new Markup($"[red]❌ Ошибка публикации в Instagram[/]\n\n" +
-                                                 $"[grey]{result.ErrorMessage}[/]"))
-                                    {
-                                        Border = BoxBorder.Double,
-                                        BorderStyle = new Style(Color.Red)
-                                    };
-                                    AnsiConsole.Write(errorPanel);
-                                }
-
-                                // Удаляем локальный файл после публикации
-                                try
-                                {
-                                    File.Delete(localPath);
-                                    AnsiConsole.MarkupLine($"\n[grey]🗑️  Удалён локальный файл[/]");
-                                }
-                                catch { }
-                            });
-
-                        AnsiConsole.WriteLine();
-
-                        // Задержка перед следующим аккаунтом (но не после последнего)
-                        if (i < tiktokUsernames.Count - 1)
+                        // Задержка перед следующим Instagram аккаунтом (но не после последнего)
+                        if (accountIndex < instagramAccounts.Count - 1)
                         {
-                            AnsiConsole.MarkupLine($"[grey]⏳ Ждём {accountDelay} секунд перед проверкой следующего аккаунта...[/]\n");
-                            await Task.Delay(TimeSpan.FromSeconds(accountDelay));
+                            AnsiConsole.MarkupLine($"[grey]⏳ Ждём {accountDelay} минуту перед следующим аккаунтом...[/]\n");
+                            await Task.Delay(TimeSpan.FromMinutes(accountDelay));
                         }
                     }
 
-                    AnsiConsole.MarkupLine($"[grey]💤 Следующая проверка всех аккаунтов через {checkInterval} минут...[/]\n");
+                    AnsiConsole.MarkupLine($"[grey]💤 Следующая проверка через {checkInterval} минут...[/]\n");
                     await Task.Delay(TimeSpan.FromMinutes(checkInterval));
                 }
                 catch (Exception ex)
@@ -213,18 +226,34 @@ namespace InstagramVideoPublisher
             }
         }
 
-        static string GenerateCaption(TikTokVideo video)
+        static string GenerateCaption(TikTokVideo video, string tiktokUsername)
         {
-            // Генерируем caption для Instagram
             var caption = video.Title;
 
             // Добавляем хештеги если их нет
             if (!caption.Contains("#"))
             {
-                caption += " #glavstroy #tiktok #reels";
+                caption += "\n\n#reels #viral #trending";
             }
 
             return caption;
+        }
+
+        static IInstagramService CreateInstagramService(
+            IServiceProvider serviceProvider,
+            string accessToken,
+            string accountId)
+        {
+            var logger = serviceProvider.GetRequiredService<ILogger<InstagramService>>();
+            var httpClient = serviceProvider.GetRequiredService<IHttpClientFactory>().CreateClient();
+
+            var settings = Microsoft.Extensions.Options.Options.Create(new InstagramSettings
+            {
+                AccessToken = accessToken,
+                AccountId = accountId
+            });
+
+            return new InstagramService(settings, logger, httpClient);
         }
 
         static IServiceCollection ConfigureServices()
@@ -240,9 +269,8 @@ namespace InstagramVideoPublisher
             services.AddSingleton<IConfiguration>(configuration);
 
             // Настройки
-            services.Configure<InstagramSettings>(configuration.GetSection("Instagram"));
-            services.Configure<CloudinarySettings>(configuration.GetSection("Cloudinary"));
             services.Configure<TikTokMonitorSettings>(configuration.GetSection("TikTokMonitor"));
+            services.Configure<VideoProcessingSettings>(configuration.GetSection("VideoProcessing"));
 
             // Логирование
             services.AddLogging(builder =>
@@ -252,12 +280,11 @@ namespace InstagramVideoPublisher
             });
 
             // HTTP Client
-            services.AddHttpClient<IInstagramService, InstagramService>();
+            services.AddHttpClient();
 
             // Сервисы
             services.AddSingleton<ITikTokMonitorService, TikTokMonitorService>();
-            services.AddSingleton<IFileService, FileService>();
-            services.AddSingleton<IInstagramService, InstagramService>();
+            services.AddSingleton<IVideoProcessingService, VideoProcessingService>();
 
             return services;
         }

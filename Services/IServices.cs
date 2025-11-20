@@ -64,4 +64,9 @@ namespace InstagramVideoPublisher.Services
         /// </summary>
         Task<string> DownloadVideo(TikTokVideo video, string? customPath = null);
     }
+
+    public interface IVideoProcessingService
+    {
+        Task<string> ProcessVideoAsync(string inputPath);
+    }
 }

@@ -12,7 +12,6 @@ namespace InstagramVideoPublisher.Services
         private readonly TikTokMonitorSettings _settings;
         private readonly string _lastVideoIdFile = "last_video_id.json";
         private Dictionary<string, string> _lastVideoIds = new();
-        private HashSet<string> _processedInTestMode = new();
 
         public TikTokMonitorService(
             ILogger<TikTokMonitorService> logger,
@@ -99,19 +98,6 @@ namespace InstagramVideoPublisher.Services
 
                 var latestVideo = videoList.First();
 
-                // ТЕСТОВЫЙ РЕЖИМ: Скачиваем ТОЛЬКО если этот аккаунт ещё НЕ обработан
-                if (_settings.TestMode && !_processedInTestMode.Contains(username))
-                {
-                    _logger.LogInformation($"🧪 ТЕСТОВЫЙ РЕЖИМ: Скачиваем последнее видео с @{username} - {latestVideo.Id}");
-
-                    // Запоминаем ID и добавляем в обработанные
-                    _lastVideoIds[username] = latestVideo.Id;
-                    _processedInTestMode.Add(username);
-                    SaveLastVideoIds();
-
-                    return latestVideo;
-                }
-
                 // Проверяем, видели ли мы это видео раньше
                 if (_lastVideoIds.ContainsKey(username) && _lastVideoIds[username] == latestVideo.Id)
                 {
@@ -119,8 +105,8 @@ namespace InstagramVideoPublisher.Services
                     return null;
                 }
 
-                // Если это первый запуск БЕЗ тестового режима - просто сохраняем ID
-                if (!_lastVideoIds.ContainsKey(username) && !_settings.TestMode)
+                // Если это первый запуск - просто сохраняем ID
+                if (!_lastVideoIds.ContainsKey(username))
                 {
                     _logger.LogInformation($"Первый запуск - запоминаем текущее видео: {latestVideo.Id}");
                     _lastVideoIds[username] = latestVideo.Id;
