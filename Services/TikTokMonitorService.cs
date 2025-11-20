@@ -105,13 +105,13 @@ namespace InstagramVideoPublisher.Services
                     return null;
                 }
 
-                // Если это первый запуск - просто сохраняем ID
+                // Если это первый запуск - ПУБЛИКУЕМ первое видео!
                 if (!_lastVideoIds.ContainsKey(username))
                 {
-                    _logger.LogInformation($"Первый запуск - запоминаем текущее видео: {latestVideo.Id}");
+                    _logger.LogInformation($"🎉 Первый запуск - публикуем текущее видео: {latestVideo.Title}");
                     _lastVideoIds[username] = latestVideo.Id;
                     SaveLastVideoIds();
-                    return null;
+                    return latestVideo;  // ← ВОЗВРАЩАЕМ ВИДЕО!
                 }
 
                 // Новое видео найдено!

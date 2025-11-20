@@ -9,6 +9,8 @@ namespace InstagramVideoPublisher
 {
     class Program
     {
+        private const string FIRST_RUN_FLAG = "first_run_done.flag";
+
         static async Task Main(string[] args)
         {
             // Красивый заголовок
@@ -47,6 +49,16 @@ namespace InstagramVideoPublisher
                 return;
             }
 
+            // Проверяем первый запуск
+            bool isFirstRun = !File.Exists(FIRST_RUN_FLAG);
+
+            if (isFirstRun)
+            {
+                AnsiConsole.MarkupLine("[yellow]⚠️  ПЕРВЫЙ ЗАПУСК![/]");
+                AnsiConsole.MarkupLine("[yellow]   Будет опубликовано по 1 видео на каждый Instagram аккаунт[/]");
+                AnsiConsole.MarkupLine("[yellow]   (только первый TikTok из каждого массива)[/]\n");
+            }
+
             // Показываем настройки
             var settingsTable = new Table();
             settingsTable.Border = TableBorder.Rounded;
@@ -57,7 +69,12 @@ namespace InstagramVideoPublisher
             foreach (var account in instagramAccounts)
             {
                 var status = string.IsNullOrEmpty(account.AccessToken) ? "[red]❌ Нет токена[/]" : "[green]✓ Активен[/]";
-                var tiktoks = string.Join(", ", account.TikTokUsernames.Select(u => $"@{u}"));
+
+                // Показываем что будет проверяться при первом запуске
+                var tiktoks = isFirstRun
+                    ? $"@{account.TikTokUsernames.First()} [grey](только первый!)[/]"
+                    : string.Join(", ", account.TikTokUsernames.Select(u => $"@{u}"));
+
                 settingsTable.AddRow($"@{account.AccountName}", tiktoks, status);
             }
 
@@ -79,8 +96,10 @@ namespace InstagramVideoPublisher
             AnsiConsole.Write(configTable);
             AnsiConsole.WriteLine();
 
-            AnsiConsole.MarkupLine("[yellow]ℹ️  При первом запуске видео НЕ скачиваются - только запоминается последнее видео[/]");
-            AnsiConsole.MarkupLine("[yellow]   Новые видео будут автоматически публиковаться в Instagram[/]\n");
+            if (!isFirstRun)
+            {
+                AnsiConsole.MarkupLine("[yellow]ℹ️  Новые видео будут автоматически публиковаться в Instagram[/]\n");
+            }
 
             // Главный цикл мониторинга
             int cycleCount = 0;
@@ -115,12 +134,17 @@ namespace InstagramVideoPublisher
                             instagramAccount.AccessToken,
                             instagramAccount.AccountId);
 
-                        // Проверяем каждый TikTok аккаунт
-                        for (int tiktokIndex = 0; tiktokIndex < instagramAccount.TikTokUsernames.Count; tiktokIndex++)
-                        {
-                            var tiktokUsername = instagramAccount.TikTokUsernames[tiktokIndex];
+                        // ⚡ КЛЮЧЕВАЯ ЛОГИКА: При первом запуске берём ТОЛЬКО первый TikTok!
+                        var tiktoksToCheck = isFirstRun
+                            ? new List<string> { instagramAccount.TikTokUsernames.First() }
+                            : instagramAccount.TikTokUsernames;
 
-                            AnsiConsole.MarkupLine($"[grey]🔍 Проверяем @{tiktokUsername} ({tiktokIndex + 1}/{instagramAccount.TikTokUsernames.Count})...[/]");
+                        // Проверяем каждый TikTok аккаунт
+                        for (int tiktokIndex = 0; tiktokIndex < tiktoksToCheck.Count; tiktokIndex++)
+                        {
+                            var tiktokUsername = tiktoksToCheck[tiktokIndex];
+
+                            AnsiConsole.MarkupLine($"[grey]🔍 Проверяем @{tiktokUsername} ({tiktokIndex + 1}/{tiktoksToCheck.Count})...[/]");
 
                             // Проверяем новое видео
                             var newVideo = await tiktokMonitor.CheckForNewVideo(tiktokUsername);
@@ -130,7 +154,7 @@ namespace InstagramVideoPublisher
                                 AnsiConsole.MarkupLine("[grey]   Нет новых видео[/]");
 
                                 // Задержка между проверками TikTok (кроме последнего)
-                                if (tiktokIndex < instagramAccount.TikTokUsernames.Count - 1)
+                                if (tiktokIndex < tiktoksToCheck.Count - 1)
                                 {
                                     AnsiConsole.MarkupLine($"[grey]   ⏳ Задержка {tiktokDelay}с перед следующим TikTok...[/]\n");
                                     await Task.Delay(TimeSpan.FromSeconds(tiktokDelay));
@@ -243,7 +267,7 @@ namespace InstagramVideoPublisher
                             AnsiConsole.WriteLine();
 
                             // Задержка между проверками TikTok (кроме последнего)
-                            if (tiktokIndex < instagramAccount.TikTokUsernames.Count - 1)
+                            if (tiktokIndex < tiktoksToCheck.Count - 1)
                             {
                                 AnsiConsole.MarkupLine($"[grey]⏳ Задержка {tiktokDelay} секунд перед следующим TikTok...[/]\n");
                                 await Task.Delay(TimeSpan.FromSeconds(tiktokDelay));
@@ -256,6 +280,15 @@ namespace InstagramVideoPublisher
                             AnsiConsole.MarkupLine($"[grey]⏳ Ждём {accountDelay} минуту перед следующим аккаунтом...[/]\n");
                             await Task.Delay(TimeSpan.FromMinutes(accountDelay));
                         }
+                    }
+
+                    // ⚡ После первого цикла создаём флаг и переходим в обычный режим
+                    if (isFirstRun)
+                    {
+                        File.WriteAllText(FIRST_RUN_FLAG, DateTime.Now.ToString());
+                        isFirstRun = false;
+
+                        AnsiConsole.MarkupLine("[green]✅ Первый запуск завершён! Теперь мониторим все TikTok аккаунты.[/]\n");
                     }
 
                     AnsiConsole.MarkupLine($"[grey]💤 Следующая проверка через {checkInterval} минут...[/]\n");
