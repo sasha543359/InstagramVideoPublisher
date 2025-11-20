@@ -35,6 +35,8 @@ namespace InstagramVideoPublisher
             var instagramAccounts = appSettings.InstagramAccounts;
             var checkInterval = appSettings.CheckIntervalMinutes;
             var accountDelay = appSettings.AccountCheckDelayMinutes;
+            var tiktokDelay = appSettings.TikTokCheckDelaySeconds;
+            var serverUrl = config["Server:PublicUrl"] ?? "http://localhost:8080";
 
             // Проверка настроек
             if (instagramAccounts.Count == 0)
@@ -68,9 +70,11 @@ namespace InstagramVideoPublisher
             configTable.AddColumn("[green]Значение[/]");
             configTable.AddRow("⏱️  Интервал проверки", $"{checkInterval} минут");
             configTable.AddRow("⏲️  Задержка между аккаунтами", $"{accountDelay} минута");
+            configTable.AddRow("⏳ Задержка между TikTok", $"{tiktokDelay} секунд");
             configTable.AddRow("📹 FFmpeg обработка", "[green]✓ Включена[/]");
             configTable.AddRow("🔊 Увеличение громкости", "+10%");
             configTable.AddRow("🎨 Разрешение", "720x1280 (HD вертикальное)");
+            configTable.AddRow("🌐 Сервер", serverUrl);
 
             AnsiConsole.Write(configTable);
             AnsiConsole.WriteLine();
@@ -112,16 +116,30 @@ namespace InstagramVideoPublisher
                             instagramAccount.AccountId);
 
                         // Проверяем каждый TikTok аккаунт
-                        foreach (var tiktokUsername in instagramAccount.TikTokUsernames)
+                        for (int tiktokIndex = 0; tiktokIndex < instagramAccount.TikTokUsernames.Count; tiktokIndex++)
                         {
-                            AnsiConsole.MarkupLine($"[grey]🔍 Проверяем @{tiktokUsername}...[/]");
+                            var tiktokUsername = instagramAccount.TikTokUsernames[tiktokIndex];
+
+                            AnsiConsole.MarkupLine($"[grey]🔍 Проверяем @{tiktokUsername} ({tiktokIndex + 1}/{instagramAccount.TikTokUsernames.Count})...[/]");
 
                             // Проверяем новое видео
                             var newVideo = await tiktokMonitor.CheckForNewVideo(tiktokUsername);
 
                             if (newVideo == null)
                             {
-                                AnsiConsole.MarkupLine("[grey]   Нет новых видео[/]\n");
+                                AnsiConsole.MarkupLine("[grey]   Нет новых видео[/]");
+
+                                // Задержка между проверками TikTok (кроме последнего)
+                                if (tiktokIndex < instagramAccount.TikTokUsernames.Count - 1)
+                                {
+                                    AnsiConsole.MarkupLine($"[grey]   ⏳ Задержка {tiktokDelay}с перед следующим TikTok...[/]\n");
+                                    await Task.Delay(TimeSpan.FromSeconds(tiktokDelay));
+                                }
+                                else
+                                {
+                                    AnsiConsole.WriteLine();
+                                }
+
                                 continue;
                             }
 
@@ -139,20 +157,29 @@ namespace InstagramVideoPublisher
                                     // Шаг 1: Скачиваем видео
                                     ctx.Status("📥 Скачиваем видео с TikTok...");
                                     string localPath = await tiktokMonitor.DownloadVideo(newVideo);
+
+                                    var originalSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
                                     AnsiConsole.MarkupLine($"[green]✓[/] Видео скачано: [grey]{Path.GetFileName(localPath)}[/]");
-                                    await Task.Delay(1000);
+                                    AnsiConsole.MarkupLine($"[grey]   Размер:[/] {originalSize:F2} MB");
+                                    await Task.Delay(500);
 
                                     // Шаг 2: Обрабатываем FFmpeg
                                     ctx.Status("🎬 Обрабатываем видео (FFmpeg)...");
                                     await videoProcessing.ProcessVideoAsync(localPath);
-                                    AnsiConsole.MarkupLine($"[green]✓[/] Видео обработано (уникализация, метаданные очищены)");
-                                    await Task.Delay(1000);
+
+                                    var processedSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
+                                    var sizeChange = ((processedSize - originalSize) / originalSize * 100);
+
+                                    AnsiConsole.MarkupLine($"[green]✓[/] Видео обработано");
+                                    AnsiConsole.MarkupLine($"[grey]   Размер:[/] {processedSize:F2} MB ({sizeChange:+0.0;-0.0}%)");
+                                    await Task.Delay(500);
 
                                     // Шаг 3: Генерируем публичный URL
-                                    // TODO: Здесь будет Nginx URL после настройки на сервере
-                                    // Пока используем заглушку
-                                    var publicUrl = $"http://your-server-ip/videos/{Path.GetFileName(localPath)}";
+                                    var fileName = Path.GetFileName(localPath);
+                                    var publicUrl = $"{serverUrl}/videos/{fileName}";
+
                                     AnsiConsole.MarkupLine($"[green]✓[/] URL для Instagram: [grey]{publicUrl}[/]");
+                                    await Task.Delay(500);
 
                                     // Шаг 4: Публикуем в Instagram
                                     ctx.Status($"📸 Публикуем в Instagram (@{instagramAccount.AccountName})...");
@@ -181,6 +208,10 @@ namespace InstagramVideoPublisher
                                             BorderStyle = new Style(Color.Green)
                                         };
                                         AnsiConsole.Write(successPanel);
+
+                                        // Ждём чтобы Instagram скачал видео (30 секунд)
+                                        AnsiConsole.MarkupLine("\n[grey]⏳ Ждём 30 секунд чтобы Instagram скачал видео...[/]");
+                                        await Task.Delay(TimeSpan.FromSeconds(30));
                                     }
                                     else
                                     {
@@ -197,13 +228,26 @@ namespace InstagramVideoPublisher
                                     // Удаляем локальный файл после публикации
                                     try
                                     {
-                                        File.Delete(localPath);
-                                        AnsiConsole.MarkupLine($"\n[grey]🗑️  Удалён локальный файл[/]");
+                                        if (File.Exists(localPath))
+                                        {
+                                            File.Delete(localPath);
+                                            AnsiConsole.MarkupLine($"\n[grey]🗑️  Удалён локальный файл: {fileName}[/]");
+                                        }
                                     }
-                                    catch { }
+                                    catch (Exception ex)
+                                    {
+                                        AnsiConsole.MarkupLine($"[yellow]⚠️  Не удалось удалить файл: {ex.Message}[/]");
+                                    }
                                 });
 
                             AnsiConsole.WriteLine();
+
+                            // Задержка между проверками TikTok (кроме последнего)
+                            if (tiktokIndex < instagramAccount.TikTokUsernames.Count - 1)
+                            {
+                                AnsiConsole.MarkupLine($"[grey]⏳ Задержка {tiktokDelay} секунд перед следующим TikTok...[/]\n");
+                                await Task.Delay(TimeSpan.FromSeconds(tiktokDelay));
+                            }
                         }
 
                         // Задержка перед следующим Instagram аккаунтом (но не после последнего)
@@ -220,6 +264,7 @@ namespace InstagramVideoPublisher
                 catch (Exception ex)
                 {
                     AnsiConsole.MarkupLine($"[red]❌ Ошибка:[/] {ex.Message}");
+                    AnsiConsole.MarkupLine($"[grey]Stack trace:[/] {ex.StackTrace}");
                     AnsiConsole.MarkupLine($"\n[grey]⏱️  Повторная попытка через 1 минуту...[/]\n");
                     await Task.Delay(TimeSpan.FromMinutes(1));
                 }
@@ -260,10 +305,14 @@ namespace InstagramVideoPublisher
         {
             var services = new ServiceCollection();
 
+            // Определяем окружение
+            var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development";
+
             // Конфигурация
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .AddJsonFile($"appsettings.{environment}.json", optional: true, reloadOnChange: true)
                 .Build();
 
             services.AddSingleton<IConfiguration>(configuration);
