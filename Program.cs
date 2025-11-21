@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 
+// stable version
 namespace InstagramVideoPublisher
 {
     class Program
