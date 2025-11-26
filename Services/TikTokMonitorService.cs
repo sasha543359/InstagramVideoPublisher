@@ -10,8 +10,8 @@ namespace InstagramVideoPublisher.Services
     {
         private readonly ILogger<TikTokMonitorService> _logger;
         private readonly TikTokMonitorSettings _settings;
-        private readonly string _lastVideoIdFile = "last_video_id.json";
-        private Dictionary<string, string> _lastVideoIds = new();
+        private readonly string _historyFile = "video_history.json";
+        private Dictionary<string, TikTokAccountHistory> _accountHistories = new();
 
         public TikTokMonitorService(
             ILogger<TikTokMonitorService> logger,
@@ -20,14 +20,12 @@ namespace InstagramVideoPublisher.Services
             _logger = logger;
             _settings = settings.Value;
 
-            // Создаём папку для скачивания если не существует
             if (!Directory.Exists(_settings.DownloadPath))
             {
                 Directory.CreateDirectory(_settings.DownloadPath);
             }
 
-            // Загружаем историю последних видео
-            LoadLastVideoIds();
+            LoadHistory();
         }
 
         public async Task<List<TikTokVideo>> GetLatestVideos(string username)
@@ -36,9 +34,10 @@ namespace InstagramVideoPublisher.Services
             {
                 var url = $"https://www.tiktok.com/@{username}";
 
+                // Получаем последние 5 видео с ID, title, upload_date, duration и timestamp
                 var args = $"--flat-playlist " +
-                           $"--print \"%(id)s|%(title)s|%(upload_date)s|%(duration)s\" " +
-                           $"--playlist-end 10 " +
+                           $"--print \"%(id)s|%(title)s|%(upload_date)s|%(duration)s|%(timestamp)s\" " +
+                           $"--playlist-end 5 " +
                            $"\"{url}\"";
 
                 var output = await RunProcessAsync(_settings.YtDlpPath, args);
@@ -50,14 +49,16 @@ namespace InstagramVideoPublisher.Services
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
                     var parts = line.Split('|');
-                    if (parts.Length >= 4)
+                    if (parts.Length >= 5)
                     {
                         var videoId = parts[0].Trim();
                         var title = parts[1].Trim();
                         var uploadDate = parts[2].Trim();
                         var durationStr = parts[3].Trim();
+                        var timestampStr = parts[4].Trim();
 
                         int.TryParse(durationStr, out int duration);
+                        long.TryParse(timestampStr, out long timestamp);
 
                         videos.Add(new TikTokVideo
                         {
@@ -65,6 +66,7 @@ namespace InstagramVideoPublisher.Services
                             Title = title,
                             UploadDate = uploadDate,
                             Duration = duration,
+                            Timestamp = timestamp,
                             Url = $"https://www.tiktok.com/@{username}/video/{videoId}"
                         });
                     }
@@ -83,49 +85,95 @@ namespace InstagramVideoPublisher.Services
         {
             try
             {
-                _logger.LogInformation($"Проверяем новые видео у @{username}");
+                _logger.LogInformation($"   Проверяем новые видео у @{username}");
 
                 var videos = await GetLatestVideos(username);
 
-                // Фильтруем только видео (не слайдеры фото)
                 var videoList = videos.Where(v => v.IsVideo).ToList();
 
                 if (videoList.Count == 0)
                 {
-                    _logger.LogInformation("Видео не найдены");
+                    _logger.LogInformation("   Видео не найдены (аккаунт может не существовать или изменил ник)");
                     return null;
                 }
 
-                var latestVideo = videoList.First();
-
-                // Проверяем, видели ли мы это видео раньше
-                if (_lastVideoIds.ContainsKey(username) && _lastVideoIds[username] == latestVideo.Id)
+                // Если аккаунта нет в истории - первый запуск
+                if (!_accountHistories.ContainsKey(username))
                 {
-                    _logger.LogInformation($"Нет новых видео (последнее: {latestVideo.Id})");
-                    return null;
+                    _logger.LogInformation($"   🆕 Первый запуск для @{username}");
+                    _logger.LogInformation($"   Инициализируем историю с последними {videoList.Count} видео");
+
+                    var history = new TikTokAccountHistory();
+                    foreach (var video in videoList)
+                    {
+                        history.AddVideo(video.Id, video.Timestamp);
+                        _logger.LogInformation($"      - {video.Id} (timestamp: {video.Timestamp})");
+                    }
+
+                    _accountHistories[username] = history;
+                    SaveHistory();
+
+                    _logger.LogInformation($"   ✅ История инициализирована, следующие видео будут публиковаться");
+                    return null; // НЕ публикуем при первом запуске
                 }
 
-                // Если это первый запуск - ПУБЛИКУЕМ первое видео!
-                if (!_lastVideoIds.ContainsKey(username))
+                var accountHistory = _accountHistories[username];
+                var latestTimestamp = accountHistory.GetLatestTimestamp();
+
+                // Проверяем каждое видео
+                foreach (var video in videoList)
                 {
-                    _logger.LogInformation($"🎉 Первый запуск - публикуем текущее видео: {latestVideo.Title}");
-                    _lastVideoIds[username] = latestVideo.Id;
-                    SaveLastVideoIds();
-                    return latestVideo;  // ← ВОЗВРАЩАЕМ ВИДЕО!
+                    // Условия для публикации:
+                    // 1. ID НЕТ в истории
+                    // 2. Timestamp БОЛЬШЕ самого свежего в истории (защита от старых видео)
+                    if (!accountHistory.ContainsVideo(video.Id) && video.Timestamp > latestTimestamp)
+                    {
+                        _logger.LogInformation($"   🎉 Найдено НОВОЕ видео!");
+                        _logger.LogInformation($"      Название: {video.Title}");
+                        _logger.LogInformation($"      ID: {video.Id}");
+                        _logger.LogInformation($"      Timestamp: {video.Timestamp} (последний в истории: {latestTimestamp})");
+
+                        return video;
+                    }
                 }
 
-                // Новое видео найдено!
-                _logger.LogInformation($"🎉 Найдено новое видео: {latestVideo.Title}");
-                _lastVideoIds[username] = latestVideo.Id;
-                SaveLastVideoIds();
-
-                return latestVideo;
+                _logger.LogInformation($"   Нет новых видео (последнее: {videoList.First().Id})");
+                return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Ошибка проверки новых видео");
+                _logger.LogError(ex, $"   ❌ Ошибка проверки @{username}: {ex.Message}");
+                _logger.LogInformation("   Пропускаем этот аккаунт и продолжаем...");
                 return null;
             }
+        }
+
+        public void MarkVideoAsProcessed(string username, string videoId, long timestamp)
+        {
+            try
+            {
+                _logger.LogInformation($"   ✅ Сохраняем видео {videoId} в историю @{username}");
+
+                if (!_accountHistories.ContainsKey(username))
+                {
+                    _accountHistories[username] = new TikTokAccountHistory();
+                }
+
+                _accountHistories[username].AddVideo(videoId, timestamp);
+                SaveHistory();
+
+                _logger.LogInformation($"   История обновлена. Всего видео в истории: {_accountHistories[username].Videos.Count}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"   ❌ Ошибка сохранения истории для @{username}");
+            }
+        }
+
+        public void MarkVideoAsProcessed(string username, string videoId)
+        {
+            // Для обратной совместимости - используем текущий timestamp
+            MarkVideoAsProcessed(username, videoId, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         }
 
         public async Task<string> DownloadVideo(TikTokVideo video, string? customPath = null)
@@ -134,61 +182,75 @@ namespace InstagramVideoPublisher.Services
             {
                 var outputPath = customPath ?? Path.Combine(_settings.DownloadPath, $"{video.Id}.mp4");
 
-                _logger.LogInformation($"Скачиваем видео: {video.Title}");
-                _logger.LogInformation($"URL: {video.Url}");
-                _logger.LogInformation($"Путь: {outputPath}");
+                _logger.LogInformation($"   📥 Скачиваем видео: {video.Title}");
+                _logger.LogInformation($"   URL: {video.Url}");
 
                 var args = $"-o \"{outputPath}\" " +
                            $"--format \"best[ext=mp4]\" " +
                            $"--no-playlist " +
                            $"\"{video.Url}\"";
 
-                await RunProcessAsync(_settings.YtDlpPath, args, showProgress: true);
+                await RunProcessAsync(_settings.YtDlpPath, args, showProgress: false);
 
                 if (!File.Exists(outputPath))
                 {
                     throw new Exception("Файл не был скачан!");
                 }
 
-                _logger.LogInformation($"✅ Видео скачано: {outputPath}");
+                _logger.LogInformation($"   ✅ Видео скачано: {Path.GetFileName(outputPath)}");
                 return outputPath;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Ошибка скачивания видео: {video.Url}");
+                _logger.LogError(ex, $"   ❌ Ошибка скачивания видео: {video.Url}");
                 throw;
             }
         }
 
-        private void LoadLastVideoIds()
+        private void LoadHistory()
         {
             try
             {
-                if (File.Exists(_lastVideoIdFile))
+                if (File.Exists(_historyFile))
                 {
-                    var json = File.ReadAllText(_lastVideoIdFile);
-                    _lastVideoIds = JsonConvert.DeserializeObject<Dictionary<string, string>>(json)
-                                   ?? new Dictionary<string, string>();
-                    _logger.LogInformation($"Загружена история: {_lastVideoIds.Count} аккаунтов");
+                    var json = File.ReadAllText(_historyFile);
+                    _accountHistories = JsonConvert.DeserializeObject<Dictionary<string, TikTokAccountHistory>>(json)
+                                       ?? new Dictionary<string, TikTokAccountHistory>();
+
+                    var totalVideos = _accountHistories.Sum(h => h.Value.Videos.Count);
+                    _logger.LogInformation($"📂 Загружена история: {_accountHistories.Count} аккаунтов, {totalVideos} видео");
+
+                    // Показываем историю для каждого аккаунта
+                    foreach (var kvp in _accountHistories)
+                    {
+                        _logger.LogInformation($"   @{kvp.Key}: {kvp.Value.Videos.Count} видео в истории");
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️  Файл video_history.json не найден!");
+                    _logger.LogInformation("🆕 Первый запуск - будет создан новый файл");
+                    _accountHistories = new Dictionary<string, TikTokAccountHistory>();
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Не удалось загрузить историю");
-                _lastVideoIds = new Dictionary<string, string>();
+                _logger.LogError(ex, "❌ Не удалось загрузить историю");
+                _accountHistories = new Dictionary<string, TikTokAccountHistory>();
             }
         }
 
-        private void SaveLastVideoIds()
+        private void SaveHistory()
         {
             try
             {
-                var json = JsonConvert.SerializeObject(_lastVideoIds, Formatting.Indented);
-                File.WriteAllText(_lastVideoIdFile, json);
+                var json = JsonConvert.SerializeObject(_accountHistories, Formatting.Indented);
+                File.WriteAllText(_historyFile, json);
+                _logger.LogDebug($"Файл {_historyFile} обновлён");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Ошибка сохранения истории");
+                _logger.LogError(ex, "❌ Ошибка сохранения истории");
             }
         }
 

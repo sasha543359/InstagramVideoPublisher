@@ -50,7 +50,7 @@ namespace InstagramVideoPublisher.Services
     public interface ITikTokMonitorService
     {
         /// <summary>
-        /// Получить последние видео с TikTok
+        /// Получить последние видео с TikTok (до 5 штук)
         /// </summary>
         Task<List<TikTokVideo>> GetLatestVideos(string username);
 
@@ -63,6 +63,16 @@ namespace InstagramVideoPublisher.Services
         /// Скачать видео
         /// </summary>
         Task<string> DownloadVideo(TikTokVideo video, string? customPath = null);
+
+        /// <summary>
+        /// Отметить видео как обработанное (сохранить ID и timestamp в историю)
+        /// </summary>
+        void MarkVideoAsProcessed(string username, string videoId, long timestamp);
+
+        /// <summary>
+        /// Отметить видео как обработанное (без timestamp - для обратной совместимости)
+        /// </summary>
+        void MarkVideoAsProcessed(string username, string videoId);
     }
 
     public interface IVideoProcessingService

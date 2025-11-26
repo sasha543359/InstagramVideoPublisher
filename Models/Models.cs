@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace InstagramVideoPublisher.Models
 {
     public class InstagramAccountSettings
@@ -71,6 +73,55 @@ namespace InstagramVideoPublisher.Models
         public string Url { get; set; } = string.Empty;
         public string UploadDate { get; set; } = string.Empty;
         public int Duration { get; set; }
+        public long Timestamp { get; set; } // Unix timestamp
         public bool IsVideo => Duration > 0;
+    }
+
+    /// <summary>
+    /// Запись о видео в истории
+    /// </summary>
+    public class VideoHistoryEntry
+    {
+        public string Id { get; set; } = string.Empty;
+        public long Timestamp { get; set; }
+    }
+
+    /// <summary>
+    /// История видео для одного TikTok аккаунта (последние 5 видео)
+    /// </summary>
+    public class TikTokAccountHistory
+    {
+        public List<VideoHistoryEntry> Videos { get; set; } = new List<VideoHistoryEntry>();
+
+        /// <summary>
+        /// Проверить, есть ли видео в истории
+        /// </summary>
+        public bool ContainsVideo(string videoId)
+        {
+            return Videos.Any(v => v.Id == videoId);
+        }
+
+        /// <summary>
+        /// Получить самый свежий timestamp из истории
+        /// </summary>
+        public long GetLatestTimestamp()
+        {
+            return Videos.Count > 0 ? Videos.Max(v => v.Timestamp) : 0;
+        }
+
+        /// <summary>
+        /// Добавить новое видео в историю (автоматически удаляет самое старое если > 5)
+        /// </summary>
+        public void AddVideo(string videoId, long timestamp)
+        {
+            // Добавляем новое видео в начало
+            Videos.Insert(0, new VideoHistoryEntry { Id = videoId, Timestamp = timestamp });
+
+            // Оставляем только последние 5
+            if (Videos.Count > 5)
+            {
+                Videos = Videos.Take(5).ToList();
+            }
+        }
     }
 }
