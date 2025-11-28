@@ -1,391 +1,329 @@
-using InstagramVideoPublisher.Models;
-using InstagramVideoPublisher.Services;
+using InstagramBulkPublisher.Models;
+using InstagramBulkPublisher.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 
-namespace InstagramVideoPublisher
+namespace InstagramBulkPublisher
 {
     class Program
     {
         static async Task Main(string[] args)
         {
+            // Красивый заголовок
             AnsiConsole.Write(
-                new FigletText("TikTok -> Instagram")
+                new FigletText("Instagram Bulk")
                     .Centered()
                     .Color(Color.Purple));
+            AnsiConsole.MarkupLine("[grey]Массовая публикация видео в Instagram[/]\n");
 
-            AnsiConsole.MarkupLine("[grey]Автоматическая публикация видео из TikTok в Instagram[/]\n");
-
+            // Настраиваем DI
             var services = ConfigureServices();
             var serviceProvider = services.BuildServiceProvider();
 
-            var tiktokMonitor = serviceProvider.GetRequiredService<ITikTokMonitorService>();
-            var videoProcessing = serviceProvider.GetRequiredService<IVideoProcessingService>();
+            var accountService = serviceProvider.GetRequiredService<IAccountService>();
+            var videoFileService = serviceProvider.GetRequiredService<IVideoFileService>();
+            var bulkPublishService = serviceProvider.GetRequiredService<IBulkPublishService>();
             var config = serviceProvider.GetRequiredService<IConfiguration>();
 
-            var appSettings = new AppSettings();
-            config.Bind(appSettings);
+            // Загружаем настройки
+            var settings = new AppSettings();
+            config.GetSection("App").Bind(settings);
 
-            var instagramAccounts = appSettings.InstagramAccounts;
-            var checkInterval = appSettings.CheckIntervalMinutes;
-            var tiktokDelay = appSettings.TikTokCheckDelaySeconds;
-            var serverUrl = config["Server:PublicUrl"] ?? "http://localhost:8080";
-
-            if (instagramAccounts.Count == 0)
-            {
-                AnsiConsole.MarkupLine("[red]❌ ОШИБКА: Instagram аккаунты не настроены![/]");
-                AnsiConsole.MarkupLine("[yellow]Откройте appsettings.json и настройте InstagramAccounts[/]");
-                Console.ReadKey();
-                return;
-            }
-
-            // Показываем настройки
-            DisplaySettings(instagramAccounts, checkInterval, tiktokDelay, serverUrl);
-
-            int cycleCount = 0;
-
+            // Показываем меню
             while (true)
             {
-                try
-                {
-                    cycleCount++;
-
-                    var rule = new Rule($"[cyan]Цикл #{cycleCount} - {DateTime.Now:HH:mm:ss}[/]");
-                    AnsiConsole.Write(rule);
-                    AnsiConsole.WriteLine();
-
-                    // Находим максимальное количество TikTok аккаунтов
-                    int maxTikTokAccounts = instagramAccounts.Max(acc => acc.TikTokUsernames.Count);
-
-                    AnsiConsole.MarkupLine($"[grey]🔄 Алгоритм: проходим по {maxTikTokAccounts} позициям в массивах[/]\n");
-
-                    // АЛГОРИТМ "КАРУСЕЛЬ" - проходим по позициям в массивах
-                    for (int tiktokIndex = 0; tiktokIndex < maxTikTokAccounts; tiktokIndex++)
-                    {
-                        AnsiConsole.MarkupLine($"[yellow]═══ Позиция #{tiktokIndex + 1} в массивах TikTok ═══[/]\n");
-
-                        // Проходим по всем Instagram аккаунтам для текущей позиции
-                        for (int accountIndex = 0; accountIndex < instagramAccounts.Count; accountIndex++)
+                var choice = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]Выберите действие:[/]")
+                        .AddChoices(new[]
                         {
-                            var instagramAccount = instagramAccounts[accountIndex];
+                            "1. Импортировать аккаунты из CSV",
+                            "2. Показать загруженные аккаунты",
+                            "3. Показать доступные видео",
+                            "4. Запустить публикацию",
+                            "5. Настройки",
+                            "0. Выход"
+                        }));
 
-                            // Проверяем есть ли токен
-                            if (string.IsNullOrEmpty(instagramAccount.AccessToken))
-                            {
-                                AnsiConsole.MarkupLine($"[red]⚠️  @{instagramAccount.AccountName} - нет токена, пропускаем[/]\n");
-                                continue;
-                            }
+                AnsiConsole.WriteLine();
 
-                            // Проверяем есть ли TikTok аккаунт на этой позиции
-                            if (tiktokIndex >= instagramAccount.TikTokUsernames.Count)
-                            {
-                                AnsiConsole.MarkupLine($"[grey]⏭️  @{instagramAccount.AccountName} - нет TikTok на позиции {tiktokIndex + 1}, пропускаем[/]");
-                                continue;
-                            }
+                switch (choice)
+                {
+                    case "1. Импортировать аккаунты из CSV":
+                        await ImportAccountsFromCsv(accountService, settings);
+                        break;
 
-                            var tiktokUsername = instagramAccount.TikTokUsernames[tiktokIndex];
+                    case "2. Показать загруженные аккаунты":
+                        await ShowAccounts(accountService, settings);
+                        break;
 
-                            AnsiConsole.MarkupLine($"[blue]📍 Instagram: @{instagramAccount.AccountName} → TikTok: @{tiktokUsername}[/]");
+                    case "3. Показать доступные видео":
+                        ShowVideos(videoFileService, settings);
+                        break;
 
-                            try
-                            {
-                                // Проверяем новое видео
-                                var newVideo = await tiktokMonitor.CheckForNewVideo(tiktokUsername);
+                    case "4. Запустить публикацию":
+                        await RunPublishing(accountService, videoFileService, bulkPublishService, settings);
+                        break;
 
-                                if (newVideo == null)
-                                {
-                                    AnsiConsole.MarkupLine("[grey]   Нет новых видео[/]\n");
+                    case "5. Настройки":
+                        ShowSettings(settings);
+                        break;
 
-                                    // Задержка перед следующей проверкой (кроме последней)
-                                    if (accountIndex < instagramAccounts.Count - 1 || tiktokIndex < maxTikTokAccounts - 1)
-                                    {
-                                        AnsiConsole.MarkupLine($"[grey]   ⏳ Задержка {tiktokDelay}с перед следующей проверкой...[/]");
-                                        await Task.Delay(TimeSpan.FromSeconds(tiktokDelay));
-                                    }
-
-                                    continue;
-                                }
-
-                                // НАШЛИ НОВОЕ ВИДЕО!
-                                AnsiConsole.MarkupLine($"[green]🎉 Найдено новое видео на @{tiktokUsername}![/]");
-                                AnsiConsole.MarkupLine($"[grey]   Название:[/] {newVideo.Title}");
-                                AnsiConsole.MarkupLine($"[grey]   ID:[/] {newVideo.Id}");
-                                AnsiConsole.MarkupLine($"[grey]   Timestamp:[/] {newVideo.Timestamp}");
-                                AnsiConsole.MarkupLine($"[grey]   Длина:[/] {newVideo.Duration} секунд\n");
-
-                                // Создаем Instagram сервис для этого аккаунта
-                                var instagramService = CreateInstagramService(
-                                    serviceProvider,
-                                    instagramAccount.AccessToken,
-                                    instagramAccount.AccountId);
-
-                                // Обрабатываем и публикуем видео
-                                await ProcessAndPublishVideo(
-                                    newVideo,
-                                    tiktokUsername,
-                                    instagramAccount.AccountName,
-                                    tiktokMonitor,
-                                    videoProcessing,
-                                    instagramService,
-                                    serverUrl);
-
-                            }
-                            catch (Exception ex)
-                            {
-                                AnsiConsole.MarkupLine($"[red]❌ Ошибка обработки @{tiktokUsername}: {ex.Message}[/]");
-                                AnsiConsole.MarkupLine("[yellow]   Продолжаем проверку других аккаунтов...[/]\n");
-                            }
-
-                            // Задержка перед следующей проверкой (кроме последней)
-                            if (accountIndex < instagramAccounts.Count - 1 || tiktokIndex < maxTikTokAccounts - 1)
-                            {
-                                AnsiConsole.MarkupLine($"[grey]   ⏳ Задержка {tiktokDelay}с перед следующей проверкой...[/]");
-                                await Task.Delay(TimeSpan.FromSeconds(tiktokDelay));
-                            }
-                        }
-
-                        AnsiConsole.WriteLine();
-                    }
-
-                    AnsiConsole.MarkupLine($"[grey]💤 Цикл завершен. Следующая проверка через {checkInterval} минут...[/]\n");
-                    await Task.Delay(TimeSpan.FromMinutes(checkInterval));
+                    case "0. Выход":
+                        AnsiConsole.MarkupLine("[green]До свидания![/]");
+                        return;
                 }
-                catch (Exception ex)
+
+                AnsiConsole.WriteLine();
+            }
+        }
+
+        static async Task ImportAccountsFromCsv(IAccountService accountService, AppSettings settings)
+        {
+            try
+            {
+                // Спрашиваем путь к CSV если не задан или хотят изменить
+                var csvPath = AnsiConsole.Ask<string>(
+                    $"[cyan]Путь к CSV файлу[/] (Enter = {settings.AccountsCsvPath}):",
+                    settings.AccountsCsvPath);
+
+                if (!File.Exists(csvPath))
                 {
-                    AnsiConsole.MarkupLine($"[red]❌ Критическая ошибка в цикле:[/]");
-                    AnsiConsole.WriteException(ex);
-                    AnsiConsole.MarkupLine($"\n[grey]⏱️  Повторная попытка через 1 минуту...[/]\n");
-                    await Task.Delay(TimeSpan.FromMinutes(1));
+                    AnsiConsole.MarkupLine($"[red]❌ Файл не найден: {csvPath}[/]");
+                    AnsiConsole.MarkupLine("[yellow]Создайте CSV файл в формате: AccountName,AccountId,AccessToken[/]");
+                    return;
+                }
+
+                await AnsiConsole.Status()
+                    .StartAsync("Импортируем аккаунты...", async ctx =>
+                    {
+                        var accounts = await accountService.LoadAccountsFromCsvAsync(csvPath, settings.AccountsJsonPath);
+
+                        AnsiConsole.MarkupLine($"[green]✅ Импортировано {accounts.Count} аккаунтов[/]");
+                        AnsiConsole.MarkupLine($"[grey]Сохранено в: {settings.AccountsJsonPath}[/]");
+                    });
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]❌ Ошибка: {ex.Message}[/]");
+            }
+        }
+
+        static async Task ShowAccounts(IAccountService accountService, AppSettings settings)
+        {
+            try
+            {
+                if (!accountService.JsonExists(settings.AccountsJsonPath))
+                {
+                    AnsiConsole.MarkupLine("[yellow]⚠️ Аккаунты не загружены. Сначала импортируйте CSV.[/]");
+                    return;
+                }
+
+                var accounts = await accountService.LoadAccountsFromJsonAsync(settings.AccountsJsonPath);
+
+                var table = new Table();
+                table.Border = TableBorder.Rounded;
+                table.AddColumn("[yellow]#[/]");
+                table.AddColumn("[cyan]Имя аккаунта[/]");
+                table.AddColumn("[green]Account ID[/]");
+                table.AddColumn("[grey]Token (первые 20 символов)[/]");
+
+                for (int i = 0; i < accounts.Count; i++)
+                {
+                    var acc = accounts[i];
+                    var tokenPreview = acc.AccessToken.Length > 20
+                        ? acc.AccessToken.Substring(0, 20) + "..."
+                        : acc.AccessToken;
+
+                    table.AddRow(
+                        (i + 1).ToString(),
+                        acc.AccountName,
+                        acc.AccountId,
+                        tokenPreview
+                    );
+                }
+
+                AnsiConsole.Write(table);
+                AnsiConsole.MarkupLine($"\n[grey]Всего аккаунтов: {accounts.Count}[/]");
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]❌ Ошибка: {ex.Message}[/]");
+            }
+        }
+
+        static void ShowVideos(IVideoFileService videoFileService, AppSettings settings)
+        {
+            try
+            {
+                var videos = videoFileService.GetAllVideos(settings.VideosFolder);
+
+                AnsiConsole.MarkupLine($"[cyan]Папка:[/] {settings.VideosFolder}");
+                AnsiConsole.MarkupLine($"[green]Найдено видео:[/] {videos.Count}\n");
+
+                if (videos.Count == 0)
+                {
+                    AnsiConsole.MarkupLine("[yellow]⚠️ Видео не найдены[/]");
+                    return;
+                }
+
+                // Показываем первые 20
+                var showCount = Math.Min(20, videos.Count);
+                for (int i = 0; i < showCount; i++)
+                {
+                    var fileName = Path.GetFileName(videos[i]);
+                    var fileSize = new FileInfo(videos[i]).Length / 1024.0 / 1024.0;
+                    AnsiConsole.MarkupLine($"  [grey]{i + 1}.[/] {fileName} [grey]({fileSize:F2} MB)[/]");
+                }
+
+                if (videos.Count > 20)
+                {
+                    AnsiConsole.MarkupLine($"\n  [grey]... и ещё {videos.Count - 20} видео[/]");
                 }
             }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]❌ Ошибка: {ex.Message}[/]");
+            }
         }
 
-        static async Task ProcessAndPublishVideo(
-            TikTokVideo newVideo,
-            string tiktokUsername,
-            string instagramAccountName,
-            ITikTokMonitorService tiktokMonitor,
-            IVideoProcessingService videoProcessing,
-            IInstagramService instagramService,
-            string serverUrl)
+        static async Task RunPublishing(
+            IAccountService accountService,
+            IVideoFileService videoFileService,
+            IBulkPublishService bulkPublishService,
+            AppSettings settings)
         {
-            await AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .SpinnerStyle(Style.Parse("green bold"))
-                .StartAsync("Обрабатываем видео...", async ctx =>
+            try
+            {
+                // Проверяем аккаунты
+                if (!accountService.JsonExists(settings.AccountsJsonPath))
                 {
-                    string? localPath = null;
+                    AnsiConsole.MarkupLine("[red]❌ Сначала импортируйте аккаунты из CSV![/]");
+                    return;
+                }
 
-                    try
-                    {
-                        ctx.Status("📥 Скачиваем видео с TikTok...");
-                        localPath = await tiktokMonitor.DownloadVideo(newVideo);
+                var accounts = await accountService.LoadAccountsFromJsonAsync(settings.AccountsJsonPath);
+                if (accounts.Count == 0)
+                {
+                    AnsiConsole.MarkupLine("[red]❌ Нет загруженных аккаунтов![/]");
+                    return;
+                }
 
-                        var originalSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
-                        AnsiConsole.MarkupLine($"[green]✓[/] Видео скачано: [grey]{Path.GetFileName(localPath)}[/]");
-                        AnsiConsole.MarkupLine($"[grey]   Размер:[/] {originalSize:F2} MB");
-                        await Task.Delay(500);
+                // Проверяем видео
+                var videos = videoFileService.GetAllVideos(settings.VideosFolder);
+                if (videos.Count == 0)
+                {
+                    AnsiConsole.MarkupLine("[red]❌ Нет видео в папке![/]");
+                    return;
+                }
 
-                        ctx.Status("🎬 Обрабатываем видео (FFmpeg)...");
-                        await videoProcessing.ProcessVideoAsync(localPath);
+                var totalTasks = Math.Min(accounts.Count, videos.Count);
 
-                        var processedSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
-                        var sizeChange = ((processedSize - originalSize) / originalSize * 100);
+                // Показываем план
+                var planTable = new Table();
+                planTable.Border = TableBorder.Rounded;
+                planTable.AddColumn("[yellow]Параметр[/]");
+                planTable.AddColumn("[green]Значение[/]");
+                planTable.AddRow("Аккаунтов", accounts.Count.ToString());
+                planTable.AddRow("Видео", videos.Count.ToString());
+                planTable.AddRow("Будет опубликовано", totalTasks.ToString());
+                planTable.AddRow("Параллельных потоков", settings.ParallelPublishCount.ToString());
+                planTable.AddRow("Задержка между пачками", $"{settings.DelayBetweenPublishSeconds} сек");
+                planTable.AddRow("Удалять после публикации", settings.DeleteAfterPublish ? "[green]Да[/]" : "[red]Нет[/]");
+                planTable.AddRow("Caption", settings.DefaultCaption);
+                planTable.AddRow("Сервер", settings.ServerPublicUrl);
 
-                        AnsiConsole.MarkupLine($"[green]✓[/] Видео обработано");
-                        AnsiConsole.MarkupLine($"[grey]   Размер:[/] {processedSize:F2} MB ({sizeChange:+0.0;-0.0}%)");
-                        await Task.Delay(500);
+                AnsiConsole.Write(planTable);
+                AnsiConsole.WriteLine();
 
-                        var fileName = Path.GetFileName(localPath);
-                        var publicUrl = $"{serverUrl}/videos/{fileName}";
+                // Подтверждение
+                var confirm = AnsiConsole.Confirm("[yellow]Запустить публикацию?[/]");
+                if (!confirm)
+                {
+                    AnsiConsole.MarkupLine("[grey]Отменено[/]");
+                    return;
+                }
 
-                        AnsiConsole.MarkupLine($"[green]✓[/] URL для Instagram: [grey]{publicUrl}[/]");
-                        await Task.Delay(500);
+                AnsiConsole.WriteLine();
 
-                        ctx.Status($"📸 Публикуем в Instagram (@{instagramAccountName})...");
+                // Запускаем
+                var reports = await bulkPublishService.PublishAllAsync(
+                    accounts,
+                    videos,
+                    settings.ServerPublicUrl,
+                    settings.VideosFolder,
+                    settings.DefaultCaption,
+                    settings.ParallelPublishCount,
+                    settings.DelayBetweenPublishSeconds,
+                    settings.DeleteAfterPublish);
 
-                        var caption = GenerateCaption(newVideo, tiktokUsername);
+                // Показываем результаты
+                AnsiConsole.WriteLine();
+                var successCount = reports.Count(r => r.Success);
+                var failCount = reports.Count(r => !r.Success);
 
-                        var result = await instagramService.PublishVideoAsync(new VideoPublishInfo
-                        {
-                            FilePath = localPath,
-                            VideoUrl = publicUrl,
-                            Caption = caption
-                        });
-
-                        AnsiConsole.WriteLine();
-
-                        if (result.Success)
-                        {
-                            // ⚡ ВАЖНО: Сохраняем ID и timestamp ТОЛЬКО после успешной публикации!
-                            tiktokMonitor.MarkVideoAsProcessed(tiktokUsername, newVideo.Id, newVideo.Timestamp);
-
-                            var successPanel = new Panel(
-                                new Markup($"[green]✓ Видео успешно опубликовано![/]\n\n" +
-                                         $"[grey]Instagram:[/] [cyan]@{instagramAccountName}[/]\n" +
-                                         $"[grey]Media ID:[/] [yellow]{result.MediaId}[/]\n" +
-                                         $"[grey]TikTok:[/] [cyan]@{tiktokUsername}[/]\n" +
-                                         $"[grey]Video ID:[/] [cyan]{newVideo.Id}[/]\n" +
-                                         $"[grey]Timestamp:[/] [cyan]{newVideo.Timestamp}[/]"))
-                            {
-                                Border = BoxBorder.Double,
-                                BorderStyle = new Style(Color.Green)
-                            };
-                            AnsiConsole.Write(successPanel);
-
-                            AnsiConsole.MarkupLine("\n[grey]⏳ Ждём 30 секунд чтобы Instagram скачал видео...[/]");
-                            await Task.Delay(TimeSpan.FromSeconds(30));
-                        }
-                        else
-                        {
-                            // ⚠️ НЕ сохраняем ID при ошибке публикации!
-                            var errorPanel = new Panel(
-                                new Markup($"[red]❌ Ошибка публикации[/]\n\n" +
-                                         $"[grey]{result.ErrorMessage}[/]\n\n" +
-                                         $"[yellow]ID НЕ сохранён - попробуем снова в следующем цикле[/]"))
-                            {
-                                Border = BoxBorder.Double,
-                                BorderStyle = new Style(Color.Red)
-                            };
-                            AnsiConsole.Write(errorPanel);
-                        }
-
-                        // Удаляем локальный файл
-                        if (localPath != null && File.Exists(localPath))
-                        {
-                            try
-                            {
-                                File.Delete(localPath);
-                                AnsiConsole.MarkupLine($"\n[grey]🗑️  Удалён локальный файл: {Path.GetFileName(localPath)}[/]");
-                            }
-                            catch (Exception ex)
-                            {
-                                AnsiConsole.MarkupLine($"[yellow]⚠️  Не удалось удалить файл: {ex.Message}[/]");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        // ⚠️ НЕ сохраняем ID при любой ошибке!
-                        AnsiConsole.WriteLine();
-                        AnsiConsole.MarkupLine($"[red]❌ Ошибка обработки видео:[/] {ex.Message}");
-                        AnsiConsole.MarkupLine("[yellow]ID НЕ сохранён - попробуем снова в следующем цикле[/]");
-
-                        // Пытаемся удалить файл если он был создан
-                        if (localPath != null && File.Exists(localPath))
-                        {
-                            try
-                            {
-                                File.Delete(localPath);
-                            }
-                            catch { /* Игнорируем ошибки удаления */ }
-                        }
-
-                        throw; // Пробрасываем ошибку дальше
-                    }
-                });
-        }
-
-        static void DisplaySettings(
-            List<InstagramAccountSettings> instagramAccounts,
-            int checkInterval,
-            int tiktokDelay,
-            string serverUrl)
-        {
-            var settingsTable = new Table();
-            settingsTable.Border = TableBorder.Rounded;
-            settingsTable.AddColumn("[yellow]Instagram аккаунт[/]");
-            settingsTable.AddColumn("[green]TikTok источники[/]");
-            settingsTable.AddColumn("[cyan]Статус[/]");
-
-            foreach (var account in instagramAccounts)
-            {
-                var status = string.IsNullOrEmpty(account.AccessToken) ? "[red]❌ Нет токена[/]" : "[green]✓ Активен[/]";
-                var tiktoks = string.Join(", ", account.TikTokUsernames.Select(u => $"@{u}"));
-                settingsTable.AddRow($"@{account.AccountName}", tiktoks, status);
+                var resultPanel = new Panel(
+                    new Markup($"[green]✅ Успешно: {successCount}[/]\n" +
+                              $"[red]❌ Ошибок: {failCount}[/]\n\n" +
+                              $"[grey]Отчёт сохранён в текущую папку[/]"))
+                {
+                    Border = BoxBorder.Double,
+                    BorderStyle = new Style(successCount > failCount ? Color.Green : Color.Red)
+                };
+                AnsiConsole.Write(resultPanel);
             }
-
-            AnsiConsole.Write(settingsTable);
-            AnsiConsole.WriteLine();
-
-            var configTable = new Table();
-            configTable.Border = TableBorder.Rounded;
-            configTable.AddColumn("[yellow]Параметр[/]");
-            configTable.AddColumn("[green]Значение[/]");
-            configTable.AddRow("⏱️  Интервал проверки (полный цикл)", $"{checkInterval} минут");
-            configTable.AddRow("⏳ Задержка между проверками", $"{tiktokDelay} секунд");
-            configTable.AddRow("📹 FFmpeg обработка", "[green]✓ Включена[/]");
-            configTable.AddRow("🔊 Увеличение громкости", "+10%");
-            configTable.AddRow("🎨 Разрешение", "720x1280 (HD вертикальное)");
-            configTable.AddRow("🌐 Сервер", serverUrl);
-            configTable.AddRow("💾 История", "Последние 5 видео с timestamp");
-
-            AnsiConsole.Write(configTable);
-            AnsiConsole.WriteLine();
-
-            AnsiConsole.MarkupLine("[yellow]ℹ️  Алгоритм проверки: \"карусель\" - проходим по позициям в массивах[/]");
-            AnsiConsole.MarkupLine("[yellow]   Пример: Instagram#1→TikTok[[0]], Instagram#2→TikTok[[0]], ..., Instagram#1→TikTok[[1]], ...[/]");
-            AnsiConsole.MarkupLine("[yellow]   Защита: история последних 5 видео с timestamp предотвращает дубликаты[/]\n");
-        }
-
-        static string GenerateCaption(TikTokVideo video, string tiktokUsername)
-        {
-            var caption = video.Title;
-
-            if (!caption.Contains("#"))
+            catch (Exception ex)
             {
-                caption += "\n\n#reels #viral #trending";
+                AnsiConsole.MarkupLine($"[red]❌ Критическая ошибка: {ex.Message}[/]");
             }
-
-            return caption;
         }
 
-        static IInstagramService CreateInstagramService(
-            IServiceProvider serviceProvider,
-            string accessToken,
-            string accountId)
+        static void ShowSettings(AppSettings settings)
         {
-            var logger = serviceProvider.GetRequiredService<ILogger<InstagramService>>();
-            var httpClient = serviceProvider.GetRequiredService<IHttpClientFactory>().CreateClient();
+            var table = new Table();
+            table.Border = TableBorder.Rounded;
+            table.AddColumn("[yellow]Параметр[/]");
+            table.AddColumn("[green]Значение[/]");
 
-            var settings = Microsoft.Extensions.Options.Options.Create(new InstagramSettings
-            {
-                AccessToken = accessToken,
-                AccountId = accountId
-            });
+            table.AddRow("CSV файл аккаунтов", settings.AccountsCsvPath);
+            table.AddRow("JSON файл аккаунтов", settings.AccountsJsonPath);
+            table.AddRow("Папка с видео", settings.VideosFolder);
+            table.AddRow("Публичный URL сервера", settings.ServerPublicUrl);
+            table.AddRow("Параллельных публикаций", settings.ParallelPublishCount.ToString());
+            table.AddRow("Задержка между пачками", $"{settings.DelayBetweenPublishSeconds} сек");
+            table.AddRow("Caption по умолчанию", settings.DefaultCaption);
+            table.AddRow("Удалять видео после публикации", settings.DeleteAfterPublish ? "[green]Да[/]" : "[red]Нет[/]");
 
-            return new InstagramService(settings, logger, httpClient);
+            AnsiConsole.Write(table);
+            AnsiConsole.MarkupLine("\n[grey]Для изменения отредактируйте appsettings.json[/]");
         }
 
         static IServiceCollection ConfigureServices()
         {
             var services = new ServiceCollection();
 
-            var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development";
-
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .AddJsonFile($"appsettings.{environment}.json", optional: true, reloadOnChange: true)
                 .Build();
 
             services.AddSingleton<IConfiguration>(configuration);
 
-            services.Configure<TikTokMonitorSettings>(configuration.GetSection("TikTokMonitor"));
-            services.Configure<VideoProcessingSettings>(configuration.GetSection("VideoProcessing"));
-
             services.AddLogging(builder =>
             {
-                builder.AddConfiguration(configuration.GetSection("Logging"));
                 builder.AddConsole();
+                builder.SetMinimumLevel(LogLevel.Information);
             });
 
             services.AddHttpClient();
 
-            services.AddSingleton<ITikTokMonitorService, TikTokMonitorService>();
-            services.AddSingleton<IVideoProcessingService, VideoProcessingService>();
+            // Регистрируем сервисы
+            services.AddSingleton<IAccountService, AccountService>();
+            services.AddSingleton<IVideoFileService, VideoFileService>();
+            services.AddSingleton<IInstagramServiceFactory, InstagramServiceFactory>();
+            services.AddSingleton<IBulkPublishService, BulkPublishService>();
 
             return services;
         }

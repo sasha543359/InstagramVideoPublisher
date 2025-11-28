@@ -1,91 +1,46 @@
-using System.Text;
-using InstagramVideoPublisher.Models;
+using InstagramBulkPublisher.Models;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace InstagramVideoPublisher.Services
+namespace InstagramBulkPublisher.Services
 {
+    /// <summary>
+    /// Сервис для публикации в Instagram
+    /// </summary>
+    public interface IInstagramService
+    {
+        Task<PublishResult> PublishVideoAsync(string videoUrl, string caption);
+        Task<VideoStatus> CheckVideoStatusAsync(string creationId);
+    }
+
     public class InstagramService : IInstagramService
     {
-        private readonly InstagramSettings _settings;
-        private readonly ILogger<InstagramService> _logger;
         private readonly HttpClient _httpClient;
+        private readonly ILogger<InstagramService> _logger;
+        private readonly string _accessToken;
+        private readonly string _accountId;
         private const string BASE_URL = "https://graph.instagram.com/v24.0";
 
         public InstagramService(
-            IOptions<InstagramSettings> settings,
+            HttpClient httpClient,
             ILogger<InstagramService> logger,
-            HttpClient httpClient)
+            string accessToken,
+            string accountId)
         {
-            _settings = settings.Value;
-            _logger = logger;
             _httpClient = httpClient;
+            _logger = logger;
+            _accessToken = accessToken;
+            _accountId = accountId;
         }
 
-        public async Task<PublishResult> PublishImageAsync(string imageUrl, string caption)
+        public async Task<PublishResult> PublishVideoAsync(string videoUrl, string caption)
         {
             try
             {
-                _logger.LogInformation("Начинаем публикацию изображения...");
-
-                // Шаг 1: Создаём media container
-                var creationId = await CreateImageContainerAsync(imageUrl, caption);
-                if (string.IsNullOrEmpty(creationId))
-                {
-                    return new PublishResult
-                    {
-                        Success = false,
-                        ErrorMessage = "Не удалось создать media container"
-                    };
-                }
-
-                _logger.LogInformation($"Media container создан: {creationId}");
-
-                // Шаг 2: Публикуем
-                var mediaId = await PublishContainerAsync(creationId);
-                if (string.IsNullOrEmpty(mediaId))
-                {
-                    return new PublishResult
-                    {
-                        Success = false,
-                        ErrorMessage = "Не удалось опубликовать контент"
-                    };
-                }
-
-                _logger.LogInformation($"Контент опубликован: {mediaId}");
-
-                return new PublishResult
-                {
-                    Success = true,
-                    MediaId = mediaId,
-                    CreationId = creationId
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Ошибка при публикации изображения");
-                return new PublishResult
-                {
-                    Success = false,
-                    ErrorMessage = ex.Message
-                };
-            }
-        }
-
-        public async Task<PublishResult> PublishVideoAsync(VideoPublishInfo videoInfo)
-        {
-            try
-            {
-                Console.WriteLine("=== DEBUG: PublishVideoAsync STARTED ===");
-                _logger.LogInformation("Начинаем публикацию видео...");
-
                 // Шаг 1: Создаём video container
-                var creationId = await CreateVideoContainerAsync(videoInfo.VideoUrl!, videoInfo.Caption);
+                var creationId = await CreateVideoContainerAsync(videoUrl, caption);
                 if (string.IsNullOrEmpty(creationId))
                 {
-                    Console.WriteLine("=== DEBUG: CreateVideoContainerAsync returned NULL ===");
                     return new PublishResult
                     {
                         Success = false,
@@ -93,12 +48,10 @@ namespace InstagramVideoPublisher.Services
                     };
                 }
 
-                _logger.LogInformation($"Video container создан: {creationId}");
+                _logger.LogDebug($"Video container создан: {creationId}");
 
                 // Шаг 2: Ждём обработки видео
-                _logger.LogInformation("Ожидаем обработки видео Instagram...");
                 var isReady = await WaitForVideoProcessingAsync(creationId);
-
                 if (!isReady)
                 {
                     return new PublishResult
@@ -108,8 +61,6 @@ namespace InstagramVideoPublisher.Services
                         CreationId = creationId
                     };
                 }
-
-                _logger.LogInformation("Видео обработано успешно!");
 
                 // Шаг 3: Публикуем
                 var mediaId = await PublishContainerAsync(creationId);
@@ -122,8 +73,6 @@ namespace InstagramVideoPublisher.Services
                     };
                 }
 
-                _logger.LogInformation($"Видео опубликовано: {mediaId}");
-
                 return new PublishResult
                 {
                     Success = true,
@@ -133,7 +82,6 @@ namespace InstagramVideoPublisher.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"=== DEBUG: EXCEPTION: {ex.Message} ===");
                 _logger.LogError(ex, "Ошибка при публикации видео");
                 return new PublishResult
                 {
@@ -147,13 +95,12 @@ namespace InstagramVideoPublisher.Services
         {
             try
             {
-                var url = $"{BASE_URL}/{creationId}?fields=status_code&access_token={_settings.AccessToken}";
+                var url = $"{BASE_URL}/{creationId}?fields=status_code&access_token={_accessToken}";
                 var response = await _httpClient.GetAsync(url);
                 var content = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogWarning($"Не удалось проверить статус: {content}");
                     return new VideoStatus { StatusCode = "UNKNOWN" };
                 }
 
@@ -162,30 +109,26 @@ namespace InstagramVideoPublisher.Services
 
                 return new VideoStatus { StatusCode = statusCode };
             }
-            catch (Exception ex)
+            catch
             {
-                _logger.LogError(ex, "Ошибка при проверке статуса видео");
                 return new VideoStatus { StatusCode = "ERROR" };
             }
         }
 
-        private async Task<string?> CreateImageContainerAsync(string imageUrl, string caption)
+        private async Task<string?> CreateVideoContainerAsync(string videoUrl, string caption)
         {
-            var url = $"{BASE_URL}/{_settings.AccountId}/media";
+            var url = $"{BASE_URL}/{_accountId}/media?" +
+                      $"media_type=REELS&" +
+                      $"video_url={Uri.EscapeDataString(videoUrl)}&" +
+                      $"caption={Uri.EscapeDataString(caption)}&" +
+                      $"access_token={_accessToken}";
 
-            var formData = new FormUrlEncodedContent(new[]
-            {
-                new KeyValuePair<string, string>("image_url", imageUrl),
-                new KeyValuePair<string, string>("caption", caption),
-                new KeyValuePair<string, string>("access_token", _settings.AccessToken)
-            });
-
-            var response = await _httpClient.PostAsync(url, formData);
+            var response = await _httpClient.PostAsync(url, null);
             var responseText = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogError($"Ошибка создания image container: {responseText}");
+                _logger.LogError($"Ошибка создания container: {responseText}");
                 return null;
             }
 
@@ -193,49 +136,14 @@ namespace InstagramVideoPublisher.Services
             return result["id"]?.ToString();
         }
 
-        private async Task<string?> CreateVideoContainerAsync(string videoUrl, string caption)
-        {
-            Console.WriteLine("=== DEBUG: CreateVideoContainerAsync CALLED ===");
-
-            // ПЕРЕДАЁМ ВСЁ В URL, А НЕ В BODY!
-            var url = $"{BASE_URL}/{_settings.AccountId}/media?" +
-                      $"media_type=REELS&" +
-                      $"video_url={Uri.EscapeDataString(videoUrl)}&" +
-                      $"caption={Uri.EscapeDataString(caption)}&" +
-                      $"access_token={_settings.AccessToken}";
-
-            Console.WriteLine($"=== DEBUG: Full URL (first 150 chars) = {url.Substring(0, Math.Min(150, url.Length))}... ===");
-
-            // Отправляем POST с ПУСТЫМ body
-            var response = await _httpClient.PostAsync(url, null);
-            Console.WriteLine($"=== DEBUG: Response Status Code = {response.StatusCode} ===");
-
-            var responseText = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"=== DEBUG: Response Body = {responseText} ===");
-
-            if (!response.IsSuccessStatusCode)
-            {
-                Console.WriteLine("=== DEBUG: REQUEST FAILED ===");
-                _logger.LogError($"Ошибка создания video container. Status: {response.StatusCode}");
-                _logger.LogError($"Response: {responseText}");
-                return null;
-            }
-
-            Console.WriteLine("=== DEBUG: REQUEST SUCCESS ===");
-            var result = JObject.Parse(responseText);
-            var containerId = result["id"]?.ToString();
-            Console.WriteLine($"=== DEBUG: Container ID = {containerId} ===");
-            return containerId;
-        }
-
         private async Task<string?> PublishContainerAsync(string creationId)
         {
-            var url = $"{BASE_URL}/{_settings.AccountId}/media_publish";
+            var url = $"{BASE_URL}/{_accountId}/media_publish";
 
             var formData = new FormUrlEncodedContent(new[]
             {
                 new KeyValuePair<string, string>("creation_id", creationId),
-                new KeyValuePair<string, string>("access_token", _settings.AccessToken)
+                new KeyValuePair<string, string>("access_token", _accessToken)
             });
 
             var response = await _httpClient.PostAsync(url, formData);
@@ -251,15 +159,13 @@ namespace InstagramVideoPublisher.Services
             return result["id"]?.ToString();
         }
 
-        private async Task<bool> WaitForVideoProcessingAsync(string creationId, int maxAttempts = 30)
+        private async Task<bool> WaitForVideoProcessingAsync(string creationId, int maxAttempts = 60)
         {
             for (int i = 0; i < maxAttempts; i++)
             {
-                await Task.Delay(5000); // Ждём 5 секунд между проверками
+                await Task.Delay(3000); // Ждём 3 секунды между проверками
 
                 var status = await CheckVideoStatusAsync(creationId);
-
-                _logger.LogInformation($"Статус обработки ({i + 1}/{maxAttempts}): {status.StatusCode}");
 
                 if (status.IsReady)
                 {
@@ -268,15 +174,39 @@ namespace InstagramVideoPublisher.Services
 
                 if (status.IsError)
                 {
-                    _logger.LogError("Instagram не смог обработать видео");
                     return false;
                 }
-
-                // IN_PROGRESS - продолжаем ждать
             }
 
-            _logger.LogWarning("Превышено время ожидания обработки видео");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Фабрика для создания Instagram сервисов с разными аккаунтами
+    /// </summary>
+    public interface IInstagramServiceFactory
+    {
+        IInstagramService Create(string accessToken, string accountId);
+    }
+
+    public class InstagramServiceFactory : IInstagramServiceFactory
+    {
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ILogger<InstagramService> _logger;
+
+        public InstagramServiceFactory(
+            IHttpClientFactory httpClientFactory,
+            ILogger<InstagramService> logger)
+        {
+            _httpClientFactory = httpClientFactory;
+            _logger = logger;
+        }
+
+        public IInstagramService Create(string accessToken, string accountId)
+        {
+            var httpClient = _httpClientFactory.CreateClient();
+            return new InstagramService(httpClient, _logger, accessToken, accountId);
         }
     }
 }
