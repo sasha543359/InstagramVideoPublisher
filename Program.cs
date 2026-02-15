@@ -22,7 +22,6 @@ namespace InstagramVideoPublisher
             var serviceProvider = services.BuildServiceProvider();
 
             var tiktokMonitor = serviceProvider.GetRequiredService<ITikTokMonitorService>();
-            var videoProcessing = serviceProvider.GetRequiredService<IVideoProcessingService>();
             var config = serviceProvider.GetRequiredService<IConfiguration>();
 
             var appSettings = new AppSettings();
@@ -121,13 +120,12 @@ namespace InstagramVideoPublisher
                                     instagramAccount.AccessToken,
                                     instagramAccount.AccountId);
 
-                                // Обрабатываем и публикуем видео
-                                await ProcessAndPublishVideo(
+                                // Скачиваем и публикуем видео (без обработки)
+                                await DownloadAndPublishVideo(
                                     newVideo,
                                     tiktokUsername,
                                     instagramAccount.AccountName,
                                     tiktokMonitor,
-                                    videoProcessing,
                                     instagramService,
                                     serverUrl);
 
@@ -162,19 +160,18 @@ namespace InstagramVideoPublisher
             }
         }
 
-        static async Task ProcessAndPublishVideo(
+        static async Task DownloadAndPublishVideo(
             TikTokVideo newVideo,
             string tiktokUsername,
             string instagramAccountName,
             ITikTokMonitorService tiktokMonitor,
-            IVideoProcessingService videoProcessing,
             IInstagramService instagramService,
             string serverUrl)
         {
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(Style.Parse("green bold"))
-                .StartAsync("Обрабатываем видео...", async ctx =>
+                .StartAsync("Скачиваем и публикуем видео...", async ctx =>
                 {
                     string? localPath = null;
 
@@ -183,26 +180,14 @@ namespace InstagramVideoPublisher
                         ctx.Status("📥 Скачиваем видео с TikTok...");
                         localPath = await tiktokMonitor.DownloadVideo(newVideo);
 
-                        var originalSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
+                        var fileSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
                         AnsiConsole.MarkupLine($"[green]✓[/] Видео скачано: [grey]{Path.GetFileName(localPath)}[/]");
-                        AnsiConsole.MarkupLine($"[grey]   Размер:[/] {originalSize:F2} MB");
-                        await Task.Delay(500);
-
-                        ctx.Status("🎬 Обрабатываем видео (FFmpeg)...");
-                        await videoProcessing.ProcessVideoAsync(localPath);
-
-                        var processedSize = new FileInfo(localPath).Length / 1024.0 / 1024.0;
-                        var sizeChange = ((processedSize - originalSize) / originalSize * 100);
-
-                        AnsiConsole.MarkupLine($"[green]✓[/] Видео обработано");
-                        AnsiConsole.MarkupLine($"[grey]   Размер:[/] {processedSize:F2} MB ({sizeChange:+0.0;-0.0}%)");
-                        await Task.Delay(500);
+                        AnsiConsole.MarkupLine($"[grey]   Размер:[/] {fileSize:F2} MB");
 
                         var fileName = Path.GetFileName(localPath);
                         var publicUrl = $"{serverUrl}/videos/{fileName}";
 
                         AnsiConsole.MarkupLine($"[green]✓[/] URL для Instagram: [grey]{publicUrl}[/]");
-                        await Task.Delay(500);
 
                         ctx.Status($"📸 Публикуем в Instagram (@{instagramAccountName})...");
 
@@ -219,7 +204,6 @@ namespace InstagramVideoPublisher
 
                         if (result.Success)
                         {
-                            // ⚡ ВАЖНО: Сохраняем ID и timestamp ТОЛЬКО после успешной публикации!
                             tiktokMonitor.MarkVideoAsProcessed(tiktokUsername, newVideo.Id, newVideo.Timestamp);
 
                             var successPanel = new Panel(
@@ -240,7 +224,6 @@ namespace InstagramVideoPublisher
                         }
                         else
                         {
-                            // ⚠️ НЕ сохраняем ID при ошибке публикации!
                             var errorPanel = new Panel(
                                 new Markup($"[red]❌ Ошибка публикации[/]\n\n" +
                                          $"[grey]{result.ErrorMessage}[/]\n\n" +
@@ -268,22 +251,20 @@ namespace InstagramVideoPublisher
                     }
                     catch (Exception ex)
                     {
-                        // ⚠️ НЕ сохраняем ID при любой ошибке!
                         AnsiConsole.WriteLine();
-                        AnsiConsole.MarkupLine($"[red]❌ Ошибка обработки видео:[/] {ex.Message}");
+                        AnsiConsole.MarkupLine($"[red]❌ Ошибка: {ex.Message}[/]");
                         AnsiConsole.MarkupLine("[yellow]ID НЕ сохранён - попробуем снова в следующем цикле[/]");
 
-                        // Пытаемся удалить файл если он был создан
                         if (localPath != null && File.Exists(localPath))
                         {
                             try
                             {
                                 File.Delete(localPath);
                             }
-                            catch { /* Игнорируем ошибки удаления */ }
+                            catch { }
                         }
 
-                        throw; // Пробрасываем ошибку дальше
+                        throw;
                     }
                 });
         }
@@ -316,9 +297,7 @@ namespace InstagramVideoPublisher
             configTable.AddColumn("[green]Значение[/]");
             configTable.AddRow("⏱️  Интервал проверки (полный цикл)", $"{checkInterval} минут");
             configTable.AddRow("⏳ Задержка между проверками", $"{tiktokDelay} секунд");
-            configTable.AddRow("📹 FFmpeg обработка", "[green]✓ Включена[/]");
-            configTable.AddRow("🔊 Увеличение громкости", "+10%");
-            configTable.AddRow("🎨 Разрешение", "720x1280 (HD вертикальное)");
+            configTable.AddRow("📹 FFmpeg обработка", "[grey]✗ Отключена (прямая публикация)[/]");
             configTable.AddRow("🌐 Сервер", serverUrl);
             configTable.AddRow("💾 История", "Последние 5 видео с timestamp");
 
@@ -374,7 +353,6 @@ namespace InstagramVideoPublisher
             services.AddSingleton<IConfiguration>(configuration);
 
             services.Configure<TikTokMonitorSettings>(configuration.GetSection("TikTokMonitor"));
-            services.Configure<VideoProcessingSettings>(configuration.GetSection("VideoProcessing"));
 
             services.AddLogging(builder =>
             {
@@ -385,7 +363,6 @@ namespace InstagramVideoPublisher
             services.AddHttpClient();
 
             services.AddSingleton<ITikTokMonitorService, TikTokMonitorService>();
-            services.AddSingleton<IVideoProcessingService, VideoProcessingService>();
 
             return services;
         }
