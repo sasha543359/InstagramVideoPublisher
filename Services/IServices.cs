@@ -57,7 +57,7 @@ namespace InstagramVideoPublisher.Services
         /// <summary>
         /// Проверить наличие нового видео
         /// </summary>
-        Task<TikTokVideo?> CheckForNewVideo(string username);
+        Task<TikTokVideo?> CheckForNewVideo(string username, string historyKey);
 
         /// <summary>
         /// Скачать видео
@@ -67,16 +67,7 @@ namespace InstagramVideoPublisher.Services
         /// <summary>
         /// Отметить видео как обработанное (сохранить ID и timestamp в историю)
         /// </summary>
-        void MarkVideoAsProcessed(string username, string videoId, long timestamp);
-
-        /// <summary>
-        /// Отметить видео как обработанное (без timestamp - для обратной совместимости)
-        /// </summary>
-        void MarkVideoAsProcessed(string username, string videoId);
+        void MarkVideoAsProcessed(string historyKey, string videoId, long timestamp);
     }
 
-    public interface IVideoProcessingService
-    {
-        Task<string> ProcessVideoAsync(string inputPath);
-    }
 }

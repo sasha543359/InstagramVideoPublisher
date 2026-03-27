@@ -81,11 +81,11 @@ namespace InstagramVideoPublisher.Services
             }
         }
 
-        public async Task<TikTokVideo?> CheckForNewVideo(string username)
+        public async Task<TikTokVideo?> CheckForNewVideo(string username, string historyKey)
         {
             try
             {
-                _logger.LogInformation($"   Проверяем новые видео у @{username}");
+                _logger.LogInformation($"   Проверяем новые видео у @{username} (история: {historyKey})");
 
                 var videos = await GetLatestVideos(username);
 
@@ -97,10 +97,10 @@ namespace InstagramVideoPublisher.Services
                     return null;
                 }
 
-                // Если аккаунта нет в истории - первый запуск
-                if (!_accountHistories.ContainsKey(username))
+                // Если ключа нет в истории - первый запуск для этой пары
+                if (!_accountHistories.ContainsKey(historyKey))
                 {
-                    _logger.LogInformation($"   🆕 Первый запуск для @{username}");
+                    _logger.LogInformation($"   🆕 Первый запуск для {historyKey}");
                     _logger.LogInformation($"   Инициализируем историю с последними {videoList.Count} видео");
 
                     var history = new TikTokAccountHistory();
@@ -110,14 +110,14 @@ namespace InstagramVideoPublisher.Services
                         _logger.LogInformation($"      - {video.Id} (timestamp: {video.Timestamp})");
                     }
 
-                    _accountHistories[username] = history;
+                    _accountHistories[historyKey] = history;
                     SaveHistory();
 
                     _logger.LogInformation($"   ✅ История инициализирована, следующие видео будут публиковаться");
                     return null; // НЕ публикуем при первом запуске
                 }
 
-                var accountHistory = _accountHistories[username];
+                var accountHistory = _accountHistories[historyKey];
                 var latestTimestamp = accountHistory.GetLatestTimestamp();
 
                 // Проверяем каждое видео
@@ -148,32 +148,26 @@ namespace InstagramVideoPublisher.Services
             }
         }
 
-        public void MarkVideoAsProcessed(string username, string videoId, long timestamp)
+        public void MarkVideoAsProcessed(string historyKey, string videoId, long timestamp)
         {
             try
             {
-                _logger.LogInformation($"   ✅ Сохраняем видео {videoId} в историю @{username}");
+                _logger.LogInformation($"   ✅ Сохраняем видео {videoId} в историю [{historyKey}]");
 
-                if (!_accountHistories.ContainsKey(username))
+                if (!_accountHistories.ContainsKey(historyKey))
                 {
-                    _accountHistories[username] = new TikTokAccountHistory();
+                    _accountHistories[historyKey] = new TikTokAccountHistory();
                 }
 
-                _accountHistories[username].AddVideo(videoId, timestamp);
+                _accountHistories[historyKey].AddVideo(videoId, timestamp);
                 SaveHistory();
 
-                _logger.LogInformation($"   История обновлена. Всего видео в истории: {_accountHistories[username].Videos.Count}");
+                _logger.LogInformation($"   История обновлена. Всего видео в истории: {_accountHistories[historyKey].Videos.Count}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"   ❌ Ошибка сохранения истории для @{username}");
+                _logger.LogError(ex, $"   ❌ Ошибка сохранения истории для [{historyKey}]");
             }
-        }
-
-        public void MarkVideoAsProcessed(string username, string videoId)
-        {
-            // Для обратной совместимости - используем текущий timestamp
-            MarkVideoAsProcessed(username, videoId, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         }
 
         public async Task<string> DownloadVideo(TikTokVideo video, string? customPath = null)

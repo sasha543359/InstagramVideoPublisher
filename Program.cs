@@ -85,13 +85,14 @@ namespace InstagramVideoPublisher
                             }
 
                             var tiktokUsername = instagramAccount.TikTokUsernames[tiktokIndex];
+                            var historyKey = $"{instagramAccount.AccountName}:{tiktokUsername}";
 
                             AnsiConsole.MarkupLine($"[blue]📍 Instagram: @{instagramAccount.AccountName} → TikTok: @{tiktokUsername}[/]");
 
                             try
                             {
                                 // Проверяем новое видео
-                                var newVideo = await tiktokMonitor.CheckForNewVideo(tiktokUsername);
+                                var newVideo = await tiktokMonitor.CheckForNewVideo(tiktokUsername, historyKey);
 
                                 if (newVideo == null)
                                 {
@@ -124,7 +125,8 @@ namespace InstagramVideoPublisher
                                 await DownloadAndPublishVideo(
                                     newVideo,
                                     tiktokUsername,
-                                    instagramAccount.AccountName,
+                                    historyKey,
+                                    instagramAccount,
                                     tiktokMonitor,
                                     instagramService,
                                     serverUrl);
@@ -163,7 +165,8 @@ namespace InstagramVideoPublisher
         static async Task DownloadAndPublishVideo(
             TikTokVideo newVideo,
             string tiktokUsername,
-            string instagramAccountName,
+            string historyKey,
+            InstagramAccountSettings instagramAccount,
             ITikTokMonitorService tiktokMonitor,
             IInstagramService instagramService,
             string serverUrl)
@@ -174,6 +177,7 @@ namespace InstagramVideoPublisher
                 .StartAsync("Скачиваем и публикуем видео...", async ctx =>
                 {
                     string? localPath = null;
+                    var instagramAccountName = instagramAccount.AccountName;
 
                     try
                     {
@@ -191,7 +195,7 @@ namespace InstagramVideoPublisher
 
                         ctx.Status($"📸 Публикуем в Instagram (@{instagramAccountName})...");
 
-                        var caption = GenerateCaption(newVideo, tiktokUsername);
+                        var caption = GenerateCaption(newVideo, tiktokUsername, instagramAccount.CustomCaption);
 
                         var result = await instagramService.PublishVideoAsync(new VideoPublishInfo
                         {
@@ -204,7 +208,7 @@ namespace InstagramVideoPublisher
 
                         if (result.Success)
                         {
-                            tiktokMonitor.MarkVideoAsProcessed(tiktokUsername, newVideo.Id, newVideo.Timestamp);
+                            tiktokMonitor.MarkVideoAsProcessed(historyKey, newVideo.Id, newVideo.Timestamp);
 
                             var successPanel = new Panel(
                                 new Markup($"[green]✓ Видео успешно опубликовано![/]\n\n" +
@@ -297,7 +301,6 @@ namespace InstagramVideoPublisher
             configTable.AddColumn("[green]Значение[/]");
             configTable.AddRow("⏱️  Интервал проверки (полный цикл)", $"{checkInterval} минут");
             configTable.AddRow("⏳ Задержка между проверками", $"{tiktokDelay} секунд");
-            configTable.AddRow("📹 FFmpeg обработка", "[grey]✗ Отключена (прямая публикация)[/]");
             configTable.AddRow("🌐 Сервер", serverUrl);
             configTable.AddRow("💾 История", "Последние 5 видео с timestamp");
 
@@ -309,8 +312,11 @@ namespace InstagramVideoPublisher
             AnsiConsole.MarkupLine("[yellow]   Защита: история последних 5 видео с timestamp предотвращает дубликаты[/]\n");
         }
 
-        static string GenerateCaption(TikTokVideo video, string tiktokUsername)
+        static string GenerateCaption(TikTokVideo video, string tiktokUsername, string? customCaption)
         {
+            if (!string.IsNullOrWhiteSpace(customCaption))
+                return customCaption;
+
             var caption = video.Title;
 
             if (!caption.Contains("#"))
