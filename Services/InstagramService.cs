@@ -83,6 +83,18 @@ namespace InstagramVideoPublisher.Services
 
                 // Шаг 1: Создаём video container
                 var creationId = await CreateVideoContainerAsync(videoInfo.VideoUrl!, videoInfo.Caption, videoInfo.CoverUrl, videoInfo.ThumbOffsetMs);
+
+                // ЗАЩИТА: если контейнер с обложкой не создался И обложка была задана —
+                // повторяем БЕЗ обложки. Так публикация не ломается, даже если этот API-эндпоинт
+                // (graph.instagram.com) не принимает cover_url/thumb_offset.
+                if (string.IsNullOrEmpty(creationId) &&
+                    (!string.IsNullOrWhiteSpace(videoInfo.CoverUrl) || videoInfo.ThumbOffsetMs.HasValue))
+                {
+                    _logger.LogWarning("Контейнер с обложкой не создан — повторяем публикацию без обложки.");
+                    Console.WriteLine("=== DEBUG: retrying WITHOUT cover ===");
+                    creationId = await CreateVideoContainerAsync(videoInfo.VideoUrl!, videoInfo.Caption);
+                }
+
                 if (string.IsNullOrEmpty(creationId))
                 {
                     Console.WriteLine("=== DEBUG: CreateVideoContainerAsync returned NULL ===");
