@@ -197,11 +197,23 @@ namespace InstagramVideoPublisher
 
                         var caption = GenerateCaption(newVideo, tiktokUsername, instagramAccount.CustomCaption);
 
+                        // ОБЛОЖКА (опционально): если у аккаунта задан файл обложки в appsettings,
+                        // строим публичный URL — её раздаёт тот же nginx, что и видео.
+                        // Если CoverImage не задан, coverUrl остаётся null и публикация идёт как раньше.
+                        string? coverUrl = null;
+                        if (!string.IsNullOrWhiteSpace(instagramAccount.CoverImage))
+                        {
+                            coverUrl = $"{serverUrl}/videos/covers/{instagramAccount.CoverImage}";
+                            AnsiConsole.MarkupLine($"[grey]   🖼️  Обложка:[/] {coverUrl}");
+                        }
+
                         var result = await instagramService.PublishVideoAsync(new VideoPublishInfo
                         {
                             FilePath = localPath,
                             VideoUrl = publicUrl,
-                            Caption = caption
+                            Caption = caption,
+                            CoverUrl = coverUrl,
+                            ThumbOffsetMs = instagramAccount.ThumbOffsetMs
                         });
 
                         AnsiConsole.WriteLine();

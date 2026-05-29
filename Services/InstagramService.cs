@@ -82,7 +82,7 @@ namespace InstagramVideoPublisher.Services
                 _logger.LogInformation("Начинаем публикацию видео...");
 
                 // Шаг 1: Создаём video container
-                var creationId = await CreateVideoContainerAsync(videoInfo.VideoUrl!, videoInfo.Caption);
+                var creationId = await CreateVideoContainerAsync(videoInfo.VideoUrl!, videoInfo.Caption, videoInfo.CoverUrl, videoInfo.ThumbOffsetMs);
                 if (string.IsNullOrEmpty(creationId))
                 {
                     Console.WriteLine("=== DEBUG: CreateVideoContainerAsync returned NULL ===");
@@ -193,7 +193,7 @@ namespace InstagramVideoPublisher.Services
             return result["id"]?.ToString();
         }
 
-        private async Task<string?> CreateVideoContainerAsync(string videoUrl, string caption)
+        private async Task<string?> CreateVideoContainerAsync(string videoUrl, string caption, string? coverUrl = null, int? thumbOffsetMs = null)
         {
             Console.WriteLine("=== DEBUG: CreateVideoContainerAsync CALLED ===");
 
@@ -203,6 +203,18 @@ namespace InstagramVideoPublisher.Services
                       $"video_url={Uri.EscapeDataString(videoUrl)}&" +
                       $"caption={Uri.EscapeDataString(caption)}&" +
                       $"access_token={_settings.AccessToken}";
+
+            // ОБЛОЖКА: своя картинка (cover_url) имеет приоритет; иначе кадр из видео (thumb_offset).
+            if (!string.IsNullOrWhiteSpace(coverUrl))
+            {
+                url += $"&cover_url={Uri.EscapeDataString(coverUrl)}";
+                Console.WriteLine($"=== DEBUG: cover_url = {coverUrl} ===");
+            }
+            else if (thumbOffsetMs.HasValue)
+            {
+                url += $"&thumb_offset={thumbOffsetMs.Value}";
+                Console.WriteLine($"=== DEBUG: thumb_offset = {thumbOffsetMs.Value} ===");
+            }
 
             Console.WriteLine($"=== DEBUG: Full URL (first 150 chars) = {url.Substring(0, Math.Min(150, url.Length))}... ===");
 

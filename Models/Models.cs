@@ -9,6 +9,12 @@ namespace InstagramVideoPublisher.Models
         public string AccountId { get; set; } = string.Empty;
         public List<string> TikTokUsernames { get; set; } = new List<string>();
         public string? CustomCaption { get; set; }
+        // Имя файла обложки в папке /var/www/videos/covers/ на сервере (напр. "cover.jpg").
+        // Если задано — используется как обложка Reels. Пусто/нет — обложка как раньше (Instagram сам).
+        public string? CoverImage { get; set; }
+        // Альтернатива: взять кадр из самого видео (миллисекунды, напр. 1000 = 1-я секунда).
+        // Используется только если CoverImage НЕ задан.
+        public int? ThumbOffsetMs { get; set; }
     }
 
     public class AppSettings
@@ -57,6 +63,8 @@ namespace InstagramVideoPublisher.Models
         public string FilePath { get; set; } = string.Empty;
         public string Caption { get; set; } = string.Empty;
         public string? VideoUrl { get; set; }
+        public string? CoverUrl { get; set; }
+        public int? ThumbOffsetMs { get; set; }
     }
 
     public class TikTokVideo
