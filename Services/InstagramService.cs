@@ -13,6 +13,7 @@ namespace InstagramVideoPublisher.Services
         private readonly ILogger<InstagramService> _logger;
         private readonly HttpClient _httpClient;
         private const string BASE_URL = "https://graph.instagram.com/v24.0";
+        private string? _lastContainerError;
 
         public InstagramService(
             IOptions<InstagramSettings> settings,
@@ -90,7 +91,8 @@ namespace InstagramVideoPublisher.Services
                 if (string.IsNullOrEmpty(creationId) &&
                     (!string.IsNullOrWhiteSpace(videoInfo.CoverUrl) || videoInfo.ThumbOffsetMs.HasValue))
                 {
-                    _logger.LogWarning("Контейнер с обложкой не создан — повторяем публикацию без обложки.");
+                    _logger.LogWarning($"⚠️ Контейнер с обложкой не создан. Причина (ответ Instagram): {_lastContainerError}");
+                    _logger.LogWarning("➡️  Повторяем публикацию БЕЗ обложки (видео выйдет, обложку API не принял).");
                     Console.WriteLine("=== DEBUG: retrying WITHOUT cover ===");
                     creationId = await CreateVideoContainerAsync(videoInfo.VideoUrl!, videoInfo.Caption);
                 }
@@ -240,6 +242,7 @@ namespace InstagramVideoPublisher.Services
             if (!response.IsSuccessStatusCode)
             {
                 Console.WriteLine("=== DEBUG: REQUEST FAILED ===");
+                _lastContainerError = $"{(int)response.StatusCode} {response.StatusCode} | {responseText}";
                 _logger.LogError($"Ошибка создания video container. Status: {response.StatusCode}");
                 _logger.LogError($"Response: {responseText}");
                 return null;
